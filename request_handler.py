@@ -1,5 +1,6 @@
 import json, logging
 from processors import Processor, cc, sc, BadRequest
+import socket
 
 import os
 
@@ -64,15 +65,14 @@ class RequestHandler:
     def run(self):
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
+        sck = socket.socket()
+        sck.bind(('', int(os.environ['PORT'])))
+        print(os.environ['PORT'])
+        sck.listen(1)
+
         while True:
-            # The following section imitates getting the request over an Internet connection, will be removed
-            request = input()
-            address = '127.0.0.1'
-            with open('request', 'w', encoding = 'utf-8') as f:
-                f.write(request)
-            with open('request', 'rb') as f:
-                request = f.read()
-            os.remove('request')
+            conn, address = sck.accept()
+            request = conn.recv(65535)
 
             log.info('received request from {}'.format(address))
             log.debug('request: {}'.format(request))
@@ -80,44 +80,30 @@ class RequestHandler:
                 code, data = self.unpack_req(request)
             except ValueError:
                 log.error('failed to decode request {}'.format(request))
-                print('\nDecode Error\n')
                 continue
 
-            print()
             try:
                 handler = self.handler_map[code]
                 log.info('processing request with ' + handler.__name__ + '()')
                 if address != data[1]:
-                    print(address, data[1])
                     log.error('IP address in the request does not match the actual one, ignoring request')
                     continue
                 response = handler(*data)
             except (TypeError, IndexError, BadRequest):
                 log.error('bad request from {}: {}'.format(address, request))
-                print('Bad Request\n')
                 continue
             r_code, r_data = self.unpack_resp(response)
             log.info('response code: ' + sc(r_code).name)
             log.debug('response: {}'.format(response))
-            print(r_code, r_data)
-            print(sc(r_code).name)
-            print()
-            print(response)
-            print()
+            conn.send(response)
 
 if __name__ == '__main__':
-    # Will be removed
-    try:
-        os.remove('server.log')
-    except:
-        pass
-
     log_level = logging.DEBUG
 
     log = logging.Logger('request_handler')
     log.setLevel(log_level)
 
-    log_handler = logging.FileHandler('server.log')
+    log_handler = logging.StreamHandler()
     log_handler.setLevel(log_level)
 
     log_fmt = logging.Formatter('[{asctime}] [{levelname}]\n{message}\n',
