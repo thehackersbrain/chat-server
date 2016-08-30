@@ -1,8 +1,10 @@
 import json, logging
 from processors import Processor, cc, sc, BadRequest
-import socket
-
+from flask import Flask
+from flask import request as flask_request
 import os
+
+app = Flask(__name__)
 
 class RequestHandler:
     pr = Processor()
@@ -34,6 +36,7 @@ class RequestHandler:
     set_image_code = str(cc.set_image.value).encode()
     profile_info_code = str(sc.profile_info.value).encode()
 
+    @classmethod
     def unpack_req(self, request):
         """Распаковывает запрос request"""
         if request[:2] == self.set_image_code:
@@ -48,6 +51,7 @@ class RequestHandler:
         code, *data = json.loads('[' + request.decode() + ']')
         return code, data
 
+    @classmethod
     def unpack_resp(self, response):
         """Распаковывает ответ response"""
         if response[:2] == self.profile_info_code:
@@ -62,61 +66,72 @@ class RequestHandler:
         code, *data = json.loads('[' + response.decode() + ']')
         return code, data
 
-    def run(self):
+    @app.route('/', methods = ['GET', 'POST'])
+    def process():
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
-        sck = socket.socket()
-        sck.bind(('', int(os.environ['PORT'])))
-        print(os.environ['PORT'])
-        sck.listen(1)
+        # Получение запроса
+        address = flask_request.remote_addr
+        request = flask_request.data
+        print(flask_request.headers.getlist("X-Forwarded-For"))
 
-        while True:
-            conn, address = sck.accept()
-            request = conn.recv(65535)
+        log.info('received request from {}'.format(address))
+        log.debug('request: {}'.format(request))
+        try:
+            code, data = RequestHandler.unpack_req(request)
+        except ValueError:
+            # Если распаковать запрос не удалось, игнорируем
+            log.error('failed to decode request {}'.format(request))
+            return b''
 
-            log.info('received request from {}'.format(address))
-            log.debug('request: {}'.format(request))
-            try:
-                code, data = self.unpack_req(request)
-            except ValueError:
-                log.error('failed to decode request {}'.format(request))
-                continue
+        try:
+            # Выбор обработчика запроса, руководствуясь его кодом
+            handler = RequestHandler.handler_map[code]
+            log.info('processing request with ' + handler.__name__ + '()')
+            if address != data[1]:
+                # Если IP-адрес, указанный в запросе, не совпадает с адресом,
+                # откуда пришел запрос, игнорируем
+                log.error('IP address in the request does not match the actual one')
+                return b''
 
-            try:
-                handler = self.handler_map[code]
-                log.info('processing request with ' + handler.__name__ + '()')
-                if address != data[1]:
-                    log.error('IP address in the request does not match the actual one, ignoring request')
-                    continue
-                response = handler(*data)
-            except (TypeError, IndexError, BadRequest):
-                log.error('bad request from {}: {}'.format(address, request))
-                continue
-            r_code, r_data = self.unpack_resp(response)
-            log.info('response code: ' + sc(r_code).name)
-            log.debug('response: {}'.format(response))
-            conn.send(response)
+            # Запускаем обработчик и получаем ответ
+            response = handler(*data)
 
-if __name__ == '__main__':
-    log_level = logging.DEBUG
+        except (TypeError, IndexError, BadRequest):
+            # Если в запросе логическая ошибка, игнорируем
+            log.error('bad request from {}: {}'.format(address, request))
+            return b''
 
-    log = logging.Logger('request_handler')
-    log.setLevel(log_level)
+        r_code, r_data = RequestHandler.unpack_resp(response)
+        log.info('response code: ' + sc(r_code).name)
+        log.info('response data: ' + str(r_data))
+        log.debug('response: {}'.format(response))
 
-    log_handler = logging.StreamHandler()
-    log_handler.setLevel(log_level)
+        return str(response)
 
-    log_fmt = logging.Formatter('[{asctime}] [{levelname}]\n{message}\n',
-                                datefmt = '%d-%m %H:%M:%S', style = '{')
-    log_handler.setFormatter(log_fmt)
+    @classmethod
+    def run(self):
+        app.run(debug=True, host=os.getenv('IP', '0.0.0.0'), port=int(os.getenv('PORT', 8080)))
 
-    log.addHandler(log_handler)
+log_level = logging.DEBUG
 
-    log.info('starting up')
-    try:
-        RequestHandler().run()
-    except KeyboardInterrupt:
-        log.info('manual exit')
-    except Exception as e:
-        log.exception('exception occured')
-        log.critical('emergency exit')
+log = logging.Logger('request_handler')
+log.setLevel(log_level)
+
+log_handler = logging.StreamHandler()
+log_handler.setLevel(log_level)
+
+log_fmt = logging.Formatter('[{asctime}] [{levelname}]\n{message}\n',
+                            datefmt = '%d-%m %H:%M:%S', style = '{')
+log_handler.setFormatter(log_fmt)
+
+log.addHandler(log_handler)
+
+log.info('starting up')
+try:
+    RequestHandler().run()
+except KeyboardInterrupt:
+    log.info('manual exit')
+except Exception as e:
+    log.exception('exception occured')
+    log.critical('emergency exit')
