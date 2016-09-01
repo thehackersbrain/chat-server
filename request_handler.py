@@ -1,8 +1,6 @@
-import json, logging
+import json, logging, os
 from processors import Processor, cc, sc, BadRequest
-from flask import Flask
-from flask import request as flask_request
-import os
+from flask import Flask, request as flask_request
 
 app = Flask(__name__)
 
@@ -70,13 +68,19 @@ class RequestHandler:
     def process():
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
+
         # Получение запроса
-        address = flask_request.remote_addr
         request = flask_request.data
-        print(flask_request.headers.getlist("X-Forwarded-For"))
+        try:
+            address = flask_request.headers.getlist("X-Forwarded-For")[-1]
+        except IndexError:
+            # Если заголовок X-Forwarded-For пуст, игнорируем
+            log.error('failed to get real IP address')
+            return b''
 
         log.info('received request from {}'.format(address))
         log.debug('request: {}'.format(request))
+
         try:
             code, data = RequestHandler.unpack_req(request)
         except ValueError:
@@ -84,15 +88,14 @@ class RequestHandler:
             log.error('failed to decode request {}'.format(request))
             return b''
 
+        # Вставляем в запрос IP-адрес
+        data.insert(1, address)
+
+
         try:
-            # Выбор обработчика запроса, руководствуясь его кодом
+            # Выбор обработчика запроса, соответствующего его коду
             handler = RequestHandler.handler_map[code]
             log.info('processing request with ' + handler.__name__ + '()')
-            if address != data[1]:
-                # Если IP-адрес, указанный в запросе, не совпадает с адресом,
-                # откуда пришел запрос, игнорируем
-                log.error('IP address in the request does not match the actual one')
-                return b''
 
             # Запускаем обработчик и получаем ответ
             response = handler(*data)
