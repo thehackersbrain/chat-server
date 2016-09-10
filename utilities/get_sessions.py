@@ -1,6 +1,9 @@
-import sqlite3
+from pgdb import connect
 
-db = sqlite3.connect('server/data/sessions.db')
+db = connect(user='postgres',
+             password='levameow',
+             host='localhost',
+             database='chat')
 c = db.cursor()
 
 c.execute('''SELECT * FROM sessions''')

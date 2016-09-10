@@ -1,14 +1,18 @@
-import sqlite3
+import os, psycopg2
+from urllib.parse import urlparse
 
 class Installer:
     @staticmethod
     def install():
-        open('data/messages.db', 'w').close()
+        urlparse.uses_netloc.append("postgres")
+        url = urlparse.urlparse(os.environ["DATABASE_URL"])
 
-        db = sqlite3.connect('data/users.db')
+        db = psycopg2.connect(database=url.path[1:],
+                              user=url.username,
+                              password=url.password,
+                              host=url.hostname,
+                              port=url.port)
         c = db.cursor()
-
-        c.execute('''PRAGMA foreign_keys = 1''')
 
         c.execute('''CREATE TABLE users (name text PRIMARY KEY,
                                          password text,
@@ -25,25 +29,18 @@ class Installer:
                                             email text,
                                             birthday int,
                                             about text,
-                                            image blob)''')
+                                            image bytea)''')
 
-        db.commit()
-        db.close()
-
-        db = sqlite3.connect('data/sessions.db')
-        c = db.cursor()
         c.execute('''CREATE TABLE sessions (name text,
                                             session_id text UNIQUE,
                                             ip text)''')
 
-        db.commit()
-        db.close()
-
-        db = sqlite3.connect('data/requests.db')
-        c = db.cursor()
         c.execute('''CREATE TABLE requests (from_who text,
                                             to_who text,
                                             message text)''')
 
         db.commit()
         db.close()
+
+if __name__ == '__main__':
+    Installer.install()

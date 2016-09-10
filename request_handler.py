@@ -91,7 +91,6 @@ class RequestHandler:
         # Вставляем в запрос IP-адрес
         data.insert(1, address)
 
-
         try:
             # Выбор обработчика запроса, соответствующего его коду
             handler = RequestHandler.handler_map[code]
