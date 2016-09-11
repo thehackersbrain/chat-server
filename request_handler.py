@@ -114,26 +114,28 @@ class RequestHandler:
     @classmethod
     def run(self):
         app.run(debug=True, host=os.getenv('IP', '0.0.0.0'), port=int(os.getenv('PORT', 8080)))
+        
+if __name__ == "__main__":
+    log_level = logging.DEBUG
+    
+    log = logging.Logger('request_handler')
+    log.setLevel(log_level)
+    
+    log_handler = logging.StreamHandler()
+    log_handler.setLevel(log_level)
+    
+    log_fmt = logging.Formatter('[{asctime}] [{levelname}]\n{message}\n',
+                                datefmt = '%d-%m %H:%M:%S', style = '{')
+    log_handler.setFormatter(log_fmt)
+    
+    log.addHandler(log_handler)
+    
+    log.info('starting up')
+    try:
+        RequestHandler().run()
+    except KeyboardInterrupt:
+        log.info('manual exit')
+    except Exception as e:
+        log.exception('exception occured')
+        log.critical('emergency exit')
 
-log_level = logging.DEBUG
-
-log = logging.Logger('request_handler')
-log.setLevel(log_level)
-
-log_handler = logging.StreamHandler()
-log_handler.setLevel(log_level)
-
-log_fmt = logging.Formatter('[{asctime}] [{levelname}]\n{message}\n',
-                            datefmt = '%d-%m %H:%M:%S', style = '{')
-log_handler.setFormatter(log_fmt)
-
-log.addHandler(log_handler)
-
-log.info('starting up')
-try:
-    RequestHandler().run()
-except KeyboardInterrupt:
-    log.info('manual exit')
-except Exception as e:
-    log.exception('exception occured')
-    log.critical('emergency exit')

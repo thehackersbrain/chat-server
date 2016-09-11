@@ -4,8 +4,7 @@ from urllib.parse import urlparse
 class Installer:
     @staticmethod
     def install():
-        urlparse.uses_netloc.append("postgres")
-        url = urlparse.urlparse(os.environ["DATABASE_URL"])
+        url = urlparse(os.environ["DATABASE_URL"])
 
         db = psycopg2.connect(database=url.path[1:],
                               user=url.username,
@@ -17,10 +16,10 @@ class Installer:
         c.execute('''CREATE TABLE users (name text PRIMARY KEY,
                                          password text,
 
-                                         friends text,
-                                         favorites text,
-                                         blacklist text,
-                                         dialogs text)''')
+                                         friends text ARRAY,
+                                         favorites text ARRAY,
+                                         blacklist text ARRAY,
+                                         dialogs text ARRAY)''')
 
         c.execute('''CREATE TABLE profiles (name text PRIMARY KEY
                                             REFERENCES users(name),

@@ -1,4 +1,5 @@
-import os, psycopg2, json, re
+import psycopg2, psycopg2.extras
+import json, re, os
 from urllib.parse import urlparse
 from hashlib import sha256
 from enum import IntEnum
@@ -85,14 +86,14 @@ sc = ServerCodes
 
 class Processor:
     # Парсинг ссылки на базу данных
-    urlparse.uses_netloc.append("postgres")
-    url = urlparse.urlparse(os.environ["DATABASE_URL"])
+    url = urlparse(os.environ["DATABASE_URL"])
 
-    db = psycopg2.connect(database=url.path[1:],
-                          user=url.username,
-                          password=url.password,
-                          host=url.hostname,
-                          port=url.port)
+    db = psycopg2.connect(database = url.path[1:],
+                          user = url.username,
+                          password = url.password,
+                          host = url.hostname,
+                          port = url.port,
+                          cursor_factory = psycopg2.extras.DictCursor)
 
     # Регулярное выражение для валидации имен пользователей
     nick_ptrn = re.compile('(?![ ]+)[\w ]{2,15}')
@@ -110,8 +111,8 @@ class Processor:
                           (nick, session_id, ip))
         except psycopg2.IntegrityError:
             raise BadRequest
-        return session_id
         c.close()
+        return session_id
 
     def _check_session(self, session_id, ip):
         """Проверяет, есть ли активная сессия с идентификатором id и IP-адресом ip
@@ -122,9 +123,9 @@ class Processor:
                      WHERE session_id = %s AND ip = %s''',
                   (session_id, ip))
         nick = c.fetchone()
+        c.close()
         if nick:
             return nick['name']
-            c.close()
         raise BadRequest()
 
     def _pack(self, *data):
@@ -152,13 +153,14 @@ class Processor:
         prev = c.fetchone()
         if not prev:
             raise BadRequest
+        data = prev[sect]
         try:
-            prev.remove(item)
+            data.remove(item)
         except ValueError:
             pass  # Если элемента нет, проигнорировать исключение
         with self.db:
-            c.execute('''UPDATE users SET {} = ?
-                         WHERE name = %s'''.format(sect), (prev, nick))
+            c.execute('''UPDATE users SET {} = %s
+                         WHERE name = %s'''.format(sect), (data, nick))
 
         c.close()
 
@@ -186,19 +188,21 @@ class Processor:
         """Добавляет элемент item к графе sect в записи с именем nick
         Вызывает BadRequest, если пользователь nick не найден"""
         c = self.db.cursor()
+
         c.execute('''SELECT {}::text[] FROM users
                      WHERE name = %s'''.format(sect), (nick,))
 
         prev = c.fetchone()
         if not prev:
             raise BadRequest
-        if item in prev:
+        data = prev[sect]
+        if item in data:
             return  # Если элемент уже есть, не добавлять его еще раз
-        prev.append(item)
+        data.append(item)
         with self.db:
             c.execute('''UPDATE users SET {} = %s
                          WHERE name = %s'''.format(sect),
-                      (prev, nick))
+                      (data, nick))
 
         c.close()
 
@@ -257,10 +261,10 @@ class Processor:
     def _next_free_dialog(self):
         """Возвращает следующий свободный номер диалога"""
         c = self.db.cursor()
-        c.execute('''SELECT name FROM information_schema.tables
+        c.execute('''SELECT table_name FROM information_schema.tables
                      WHERE table_schema = 'public' ''')
-        dialogs = sorted(int(i['name'][1:]) for i in c.fetchall()
-                         if i['name'][0] == 'd')
+        dialogs = sorted(int(i['table_name'][1:]) for i in c.fetchall()
+                         if i['table_name'][0] == 'd')
         for i in range(1, len(dialogs)):
             if dialogs[i] - dialogs[i - 1] != 1:
                 c.close()
@@ -319,7 +323,7 @@ class Processor:
         c = self.db.cursor()
         self._check_session(session_id, ip)
         c.execute('''SELECT name FROM users
-                     WHERE POSITION(%s IN name)''', (user,))
+                     WHERE POSITION(%s IN name) > 0''', (user,))
         search_results = [row['name'] for row in c.fetchall()]
         c.close()
         return self._pack(sc.search_username_result, request_id,
@@ -634,7 +638,7 @@ class Processor:
 
         c = self.db.cursor()
         c.execute('''SELECT * FROM d{}
-                     WHERE POSITION(%s IN content) AND
+                     WHERE POSITION(%s IN content) > 0 AND
                      timestamp BETWEEN %s AND %s'''.format(dialog),
                   (text, lower_tm, upper_tm))
         result = map(tuple, c.fetchall())
