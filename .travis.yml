@@ -1,0 +1,17 @@
+language: python
+
+python:
+  - "3.5"
+
+services:
+  - postgresql
+
+before_script:
+  - psql -c 'create database chat;' -U postgres
+
+script:
+  - python3 test_processors.py
+  - python3 test_request_handler.py
+
+notifications:
+  email: false
