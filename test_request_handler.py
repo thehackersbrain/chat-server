@@ -11,7 +11,7 @@ class RHTest(unittest.TestCase):
     def test_unpack_req(self):
         req1 = self.rh.set_image_code + b',"1","2","3",' + b'4'
         act1 = self.rh.unpack_req(req1)
-        exp1 = (cc.set_image.value, ['1', '2', '3', b'4'])
+        exp1 = (cc.set_image, ['1', '2', '3', b'4'])
         self.assertTupleEqual(act1, exp1)
 
         req2 = b'0,"1",["2","3","4",[]]'
@@ -22,7 +22,7 @@ class RHTest(unittest.TestCase):
     def test_unpack_resp(self):
         resp1 = self.rh.profile_info_code + b',"request_id","1","2",3,"4",img'
         act1 = self.rh.unpack_resp(resp1)
-        exp1 = (sc.profile_info.value, ['request_id', '1', '2', 3, '4', b'img'])
+        exp1 = (sc.profile_info, ['request_id', '1', '2', 3, '4', b'img'])
         self.assertTupleEqual(act1, exp1)
 
         resp2 = b'0,"1",["2","3","4",[]]'

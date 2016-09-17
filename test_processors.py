@@ -315,7 +315,7 @@ class TestProcessor(unittest.TestCase):
                                      self.ip,
                                      self.nick,
                                      self.pswd))
-        exp1 = (sc.register_succ.value,
+        exp1 = (sc.register_succ,
                 [self.request_id, self.session_id])
         self.assertTupleEqual(resp1, exp1)
 
@@ -336,7 +336,7 @@ class TestProcessor(unittest.TestCase):
                                      self.ip,
                                      self.nick,
                                      self.pswd))
-        exp2 = (sc.register_error.value,
+        exp2 = (sc.register_error,
                 [self.request_id])
         self.assertTupleEqual(resp2, exp2)
 
@@ -369,7 +369,7 @@ class TestProcessor(unittest.TestCase):
                                   self.ip,
                                   self.nick,
                                   self.pswd))
-        exp1 = (sc.login_succ.value,
+        exp1 = (sc.login_succ,
                 [self.request_id,
                  self.session_id])
         self.assertEqual(resp1, exp1)
@@ -378,7 +378,7 @@ class TestProcessor(unittest.TestCase):
                                   self.ip,
                                   self.nick,
                                   self.pswd))
-        exp2 = (sc.login_error.value,
+        exp2 = (sc.login_error,
                 [self.request_id])
         self.assertEqual(resp2, exp2)
 
@@ -418,7 +418,7 @@ class TestProcessor(unittest.TestCase):
                                             self.ip,
                                             self.session_id,
                                             'user1'))
-        exp1 = (sc.search_username_result.value,
+        exp1 = (sc.search_username_result,
                 [self.request_id,
                  ['user1', 'user10']])
         self.assertEqual(resp1[0], exp1[0])
@@ -429,7 +429,7 @@ class TestProcessor(unittest.TestCase):
                                             self.ip,
                                             self.session_id,
                                             'user'))
-        exp2 = (sc.search_username_result.value,
+        exp2 = (sc.search_username_result,
                 [self.request_id,
                  [self.nick, 'user1', 'user10', 'user2']])
         self.assertEqual(resp2[0], exp2[0])
@@ -471,7 +471,7 @@ class TestProcessor(unittest.TestCase):
         resp = self.unpack(friends_group(self.request_id,
                                          self.ip,
                                          self.session_id))
-        exp = (sc.friends_group_response.value,
+        exp = (sc.friends_group_response,
                [self.request_id,
                 [['user1', 'user2'],
                  ['user10'],
@@ -526,7 +526,7 @@ class TestProcessor(unittest.TestCase):
                                             self.session_id,
                                             2,
                                             0))
-        exp1 = (sc.message_history.value,
+        exp1 = (sc.message_history,
                 [self.request_id, msgs[-2:]])
         self.assertTupleEqual(resp1, exp1)
 
@@ -535,7 +535,7 @@ class TestProcessor(unittest.TestCase):
                                             self.session_id,
                                             0,
                                             0))
-        exp2 = (sc.message_history.value,
+        exp2 = (sc.message_history,
                 [self.request_id, msgs])
         self.assertTupleEqual(resp2, exp2)
 
@@ -575,7 +575,7 @@ class TestProcessor(unittest.TestCase):
                                          self.ip,
                                          self.session_id,
                                          *msg_args))
-        exp1 = (sc.message_received.value,
+        exp1 = (sc.message_received,
                 [self.request_id])
         self.assertTupleEqual(resp1, exp1)
 
@@ -630,7 +630,7 @@ class TestProcessor(unittest.TestCase):
                                                   self.session_id,
                                                   0,
                                                   change))
-        exp = (sc.change_profile_section_succ.value,
+        exp = (sc.change_profile_section_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -691,7 +691,7 @@ class TestProcessor(unittest.TestCase):
                                             self.ip,
                                             self.session_id,
                                             user1))
-        exp = (sc.add_to_blacklist_succ.value,
+        exp = (sc.add_to_blacklist_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -750,7 +750,7 @@ class TestProcessor(unittest.TestCase):
                                            self.ip,
                                            self.session_id,
                                            user1))
-        exp = (sc.delete_from_friends_succ.value,
+        exp = (sc.delete_from_friends_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -792,7 +792,7 @@ class TestProcessor(unittest.TestCase):
                                         self.session_id,
                                         user1,
                                         ''))
-        exp = (sc.send_request_succ.value,
+        exp = (sc.send_request_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -879,7 +879,7 @@ class TestProcessor(unittest.TestCase):
         resp = self.unpack(delete_profile(self.request_id,
                                           self.ip,
                                           self.session_id))
-        exp = (sc.delete_profile_succ.value,
+        exp = (sc.delete_profile_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -932,7 +932,7 @@ class TestProcessor(unittest.TestCase):
         resp = self.unpack(logout(self.request_id,
                                   self.ip,
                                   self.session_id))
-        exp = (sc.logout_succ.value,
+        exp = (sc.logout_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -979,7 +979,7 @@ class TestProcessor(unittest.TestCase):
                                          self.ip,
                                          self.session_id,
                                          user1))
-        exp = (sc.create_dialog_succ.value,
+        exp = (sc.create_dialog_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1055,7 +1055,7 @@ class TestProcessor(unittest.TestCase):
                                         self.ip,
                                         self.session_id,
                                         self.nick))
-        exp = (sc.profile_info.value,
+        exp = (sc.profile_info,
                [self.request_id,
                 status,
                 email,
@@ -1102,7 +1102,7 @@ class TestProcessor(unittest.TestCase):
                                                  self.ip,
                                                  self.session_id,
                                                  user1))
-        exp = (sc.remove_from_blacklist_succ.value,
+        exp = (sc.remove_from_blacklist_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1140,7 +1140,7 @@ class TestProcessor(unittest.TestCase):
                                              self.ip,
                                              self.session_id,
                                              user1))
-        exp = (sc.take_request_back_succ.value,
+        exp = (sc.take_request_back_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1187,7 +1187,7 @@ class TestProcessor(unittest.TestCase):
                                                self.ip,
                                                self.session_id,
                                                user1))
-        exp = (sc.confirm_add_request_succ.value,
+        exp = (sc.confirm_add_request_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1246,7 +1246,7 @@ class TestProcessor(unittest.TestCase):
                                             self.ip,
                                             self.session_id,
                                             user1))
-        exp = (sc.add_to_favorites_succ.value,
+        exp = (sc.add_to_favorites_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1283,7 +1283,7 @@ class TestProcessor(unittest.TestCase):
                                          self.ip,
                                          self.session_id,
                                          0))
-        exp = (sc.delete_dialog_succ.value,
+        exp = (sc.delete_dialog_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1333,7 +1333,7 @@ class TestProcessor(unittest.TestCase):
                                        'test_mess',
                                        50,
                                        100))
-        exp1 = (sc.search_msg_result.value,
+        exp1 = (sc.search_msg_result,
                 [self.request_id,
                  [messages[0]]])
         self.assertTupleEqual(resp1, exp1)
@@ -1345,7 +1345,7 @@ class TestProcessor(unittest.TestCase):
                                        'look',
                                        50,
                                        80))
-        exp2 = (sc.search_msg_result.value,
+        exp2 = (sc.search_msg_result,
                 [self.request_id,
                  [messages[2]]])
         self.assertTupleEqual(resp2, exp2)
@@ -1357,7 +1357,7 @@ class TestProcessor(unittest.TestCase):
                                        'look nowhere',
                                        0,
                                        100))
-        exp3 = (sc.search_msg_result.value,
+        exp3 = (sc.search_msg_result,
                 [self.request_id,
                  []])
         self.assertTupleEqual(resp3, exp3)
@@ -1401,7 +1401,7 @@ class TestProcessor(unittest.TestCase):
                                                  self.ip,
                                                  self.session_id,
                                                  user1))
-        exp = (sc.remove_from_favorites_succ.value,
+        exp = (sc.remove_from_favorites_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1439,7 +1439,7 @@ class TestProcessor(unittest.TestCase):
         resp = self.unpack(add_requests(self.request_id,
                                         self.ip,
                                         self.session_id))
-        exp = (sc.add_requests.value,
+        exp = (sc.add_requests,
                [self.request_id,
                 [[user1, 'hello']]])
         self.assertTupleEqual(resp, exp)
@@ -1476,7 +1476,7 @@ class TestProcessor(unittest.TestCase):
                                                self.ip,
                                                self.session_id,
                                                user1))
-        exp = (sc.decline_add_request_succ.value,
+        exp = (sc.decline_add_request_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
@@ -1512,7 +1512,7 @@ class TestProcessor(unittest.TestCase):
                                      self.ip,
                                      self.session_id,
                                      img))
-        exp = (sc.set_image_succ.value,
+        exp = (sc.set_image_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 

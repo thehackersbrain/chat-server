@@ -2,7 +2,6 @@ import psycopg2, psycopg2.extras
 import json, re, os
 from urllib.parse import urlparse
 from hashlib import sha256
-from enum import IntEnum
 
 sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
               b'\x00\x00\x00\x01\x00\x00\x00\x01\x08'
@@ -13,7 +12,7 @@ sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
 class BadRequest(Exception):
     """Класс исключений для индикации логической ошибки в запросе"""
 
-class ClientCodes(IntEnum):
+class ClientCodes():
     """Перечисление кодов запросов от клиента"""
     register = 0
     login = 1
@@ -45,7 +44,7 @@ class ClientCodes(IntEnum):
     decline_add_request = 27
     set_image = 28
 
-class ServerCodes(IntEnum):
+class ServerCodes():
     """Перечисление кодов запросов от сервера"""
     login_error = 0
     register_error = 1
@@ -88,11 +87,11 @@ class Processor:
     # Парсинг ссылки на базу данных
     url = urlparse(os.environ["DATABASE_URL"])
 
-    db = psycopg2.connect(database = url.path[1:],
-                          user = url.username,
-                          password = url.password,
-                          host = url.hostname,
-                          port = url.port,
+    db = psycopg2.connect(database=url.path[1:],
+                          user=url.username,
+                          password=url.password,
+                          host=url.hostname,
+                          port=url.port,
                           cursor_factory = psycopg2.extras.DictCursor)
 
     # Регулярное выражение для валидации имен пользователей

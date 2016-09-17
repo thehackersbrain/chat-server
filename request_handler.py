@@ -31,8 +31,8 @@ class RequestHandler:
         cc.decline_add_request:       pr.decline_add_request,
         cc.set_image:                 pr.set_image
     }
-    set_image_code = str(cc.set_image.value).encode()
-    profile_info_code = str(sc.profile_info.value).encode()
+    set_image_code = str(cc.set_image).encode()
+    profile_info_code = str(sc.profile_info).encode()
 
     @classmethod
     def unpack_req(self, request):
@@ -114,22 +114,22 @@ class RequestHandler:
     @classmethod
     def run(self):
         app.run(debug=True, host=os.getenv('IP', '0.0.0.0'), port=int(os.getenv('PORT', 8080)))
-        
+
 if __name__ == "__main__":
     log_level = logging.DEBUG
-    
+
     log = logging.Logger('request_handler')
     log.setLevel(log_level)
-    
+
     log_handler = logging.StreamHandler()
     log_handler.setLevel(log_level)
-    
+
     log_fmt = logging.Formatter('[{asctime}] [{levelname}]\n{message}\n',
                                 datefmt = '%d-%m %H:%M:%S', style = '{')
     log_handler.setFormatter(log_fmt)
-    
+
     log.addHandler(log_handler)
-    
+
     log.info('starting up')
     try:
         RequestHandler().run()
@@ -138,4 +138,3 @@ if __name__ == "__main__":
     except Exception as e:
         log.exception('exception occured')
         log.critical('emergency exit')
-
