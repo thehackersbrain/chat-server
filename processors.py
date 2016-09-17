@@ -43,6 +43,7 @@ class ClientCodes():
     get_add_requests = 26
     decline_add_request = 27
     set_image = 28
+    get_dialogs = 29
 
 class ServerCodes():
     """Перечисление кодов запросов от сервера"""
@@ -77,6 +78,7 @@ class ServerCodes():
     add_requests = 28
     decline_add_request_succ = 29
     set_image_succ = 30
+    get_dialogs_resp = 31
 
 cc = ClientCodes
 sc = ServerCodes
@@ -680,3 +682,21 @@ class Processor:
                       (img_data, nick))
         c.close()
         return self._pack(sc.set_image_succ, request_id)
+
+    def get_dialogs(self, request_id, ip, session_id):
+        """Получить диалоги"""
+        nick = self._check_session(session_id, ip)
+        dialogs = []
+
+        c = self.db.cursor()
+        c.execute('''SELECT dialogs::text[] FROM users
+                     WHERE name = %s''', (nick,))
+
+        for dlg in c.fetchone()['dialogs']:
+            c.execute('''SELECT sender FROM "d{}"
+                         WHERE sender != %s'''.format(dlg), (nick,))
+            user = c.fetchone()['sender']
+            dialogs.append((dlg, user))
+
+        c.close()
+        return self._pack(sc.get_dialogs_resp, request_id, dialogs)
