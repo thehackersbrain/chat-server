@@ -1,7 +1,7 @@
 import psycopg2, psycopg2.extras
 import json, re, os
+import rsa, rsa.pkcs1
 from urllib.parse import urlparse
-from hashlib import sha256
 
 sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
               b'\x00\x00\x00\x01\x00\x00\x00\x01\x08'
@@ -9,8 +9,10 @@ sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
               b'\x0cIDATx\x9cc```\x00\x00\x00\x04\x00'
               b'\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82')
 
+
 class BadRequest(Exception):
     """Класс исключений для индикации логической ошибки в запросе"""
+
 
 class ClientCodes():
     """Перечисление кодов запросов от клиента"""
@@ -44,6 +46,7 @@ class ClientCodes():
     decline_add_request = 27
     set_image = 28
     get_dialogs = 29
+
 
 class ServerCodes():
     """Перечисление кодов запросов от сервера"""
@@ -80,6 +83,7 @@ class ServerCodes():
     set_image_succ = 30
     get_dialogs_resp = 31
 
+
 cc = ClientCodes
 sc = ServerCodes
 
@@ -89,57 +93,101 @@ class Processor:
     # Парсинг ссылки на базу данных
     url = urlparse(os.environ["DATABASE_URL"])
 
-    db = psycopg2.connect(database=url.path[1:],
-                          user=url.username,
-                          password=url.password,
-                          host=url.hostname,
-                          port=url.port,
+    db = psycopg2.connect(database = url.path[1:],
+                          user = url.username,
+                          password = url.password,
+                          host = url.hostname,
+                          port = url.port,
                           cursor_factory = psycopg2.extras.DictCursor)
+
+    # Получение приватного ключа
+    c = db.cursor()
+    c.execute('''SELECT * FROM key''')
+    key_pair = c.fetchone()
+    priv_key = rsa.PrivateKey(*list(map(int, key_pair['priv_key'])))
+    pub_key_str = ':'.join(key_pair['pub_key'])
+    c.close()
+    del c, key_pair
 
     # Регулярное выражение для валидации имен пользователей
     nick_ptrn = re.compile('(?![ ]+)[\w ]{2,15}')
 
-    def _add_session(self, nick, ip):
-        """Добавляет пользователя nick по IP-адресу ip в таблицу сессий
-        Вызывает BadRequest, если такая комбинация данных уже есть в таблице"""
-        sha = sha256((nick + ip).encode())
-        session_id = sha.hexdigest()
+    def _get_public_key(self, ip):
+        """Получает публичный ключ для сессии, открытой с IP-адреса ip
+        Вызывает BadRequest, если нет сессий, открытых с этого IP-адреса"""
         c = self.db.cursor()
+        c.execute('''SELECT pub_key FROM sessions
+                     WHERE ip = %s''', (ip,))
+        key = c.fetchone()
+        if not key:
+            raise BadRequest
+        n, e = key['pub_key']
+        pub_key = rsa.PublicKey(int(n), int(e))
+        return pub_key
+
+    def _decrypt(self, request):
+        """Расшифровывает байт-строку request приватным ключом сервера
+        Вызывает BadRequest, если расшифровать строку не удалось"""
+        try:
+            decrypted = rsa.decrypt(request, self.priv_key)
+        except rsa.pkcs1.DecryptionError:
+            raise BadRequest
+        return decrypted
+
+    def _encrypt(self, response, pub_key):
+        """Зашифровывает байт-строку response
+        публичным ключом клиента pub_key"""
+        enc_response = rsa.encrypt(response, pub_key)
+        return enc_response
+
+    def _verify_signature(self, request, signature, pub_key):
+        """Проверяет подлинность подписи signature байт-строки request
+        публичным ключом pub_key
+        Вызывает BadRequest, если проверка не пройдена"""
+        try:
+            rsa.verify(request, signature, pub_key)
+        except rsa.pkcs1.VerificationError:
+            raise BadRequest
+
+    def _add_session(self, nick, pub_key, ip):
+        """Добавляет пользователя nick по IP-адресу ip
+        с публичным ключом pub_key в таблицу сессий
+        Вызывает BadRequest, если запись с таким публичным
+        ключом уже есть в таблице"""
+        c = self.db.cursor()
+
         try:
             with self.db:
                 c.execute('''INSERT INTO sessions
                              VALUES (%s, %s, %s)''',
-                          (nick, session_id, ip))
+                          (nick, pub_key.split(':'), ip))
         except psycopg2.IntegrityError:
             raise BadRequest
         c.close()
-        return session_id
 
-    def _check_session(self, session_id, ip):
-        """Проверяет, есть ли активная сессия с идентификатором id и IP-адресом ip
-        Возвращает имя пользователя, записанного под этим идентификатором
+    def _get_nick(self, ip):
+        """Возвращает имя пользователя, чья сессия открыта с IP-адреса ip
         Вызывает BadRequest, если такой записи нет"""
         c = self.db.cursor()
         c.execute('''SELECT name FROM sessions
-                     WHERE session_id = %s AND ip = %s''',
-                  (session_id, ip))
+                     WHERE ip = %s''', (ip,))
         nick = c.fetchone()
         c.close()
         if nick:
             return nick['name']
-        raise BadRequest()
+        raise BadRequest
 
     def _pack(self, *data):
         """Собирает данные data в формат для передачи
         Возвращает отформатированную байт-строку"""
         return json.dumps(data, separators = (',', ':'))[1:-1].encode()
 
-    def _close_session(self, session_id):
-        """Удаляет из таблицы сессий запись с идентификатором session_id"""
+    def _close_session(self, ip):
+        """Удаляет из таблицы сессий запись, открытую с IP-адреса ip"""
         c = self.db.cursor()
         with self.db:
             c.execute('''DELETE FROM sessions
-                         WHERE session_id = %s''', (session_id,))
+                         WHERE ip = %s''', (ip,))
 
         c.close()
 
@@ -237,7 +285,7 @@ class Processor:
         else:
             c.execute('''UPDATE d{} SET sender = '~' || %s
                          WHERE sender = %s'''.format(dialog),
-                                                  (user, user))
+                                             (user, user))
         # Диалог с номером dialog удаляется из диалогов пользователя user
         self._remove_from(user, str(dialog), 'dialogs')
         self.db.commit()
@@ -273,9 +321,9 @@ class Processor:
         c.close()
         return dialogs[-1] + 1
 
-
-    def register(self, request_id, ip, nick, pswd):
-        """Зарегистрироваться с именем nick и хэшем pswd пароля"""
+    def register(self, request_id, ip, nick, pswd, pub_key):
+        """Зарегистрироваться с именем nick, хэшем pswd пароля
+        и публичным ключом pub_key"""
         if not self._valid_nick(nick):
             return self._pack(sc.register_error, request_id)
 
@@ -289,7 +337,7 @@ class Processor:
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''',
-                         (nick, pswd))
+                          (nick, pswd))
 
                 c.execute('''INSERT INTO profiles
                              VALUES (%s, '', '', 0, '', E'')''', (nick,))
@@ -297,13 +345,14 @@ class Processor:
             # Если пользователь с таким именем существует
             return self._pack(sc.register_error, request_id)
 
-        session_id = self._add_session(nick, ip)
+        self._add_session(nick, pub_key, ip)
 
         c.close()
-        return self._pack(sc.register_succ, request_id, session_id)
+        return self._pack(sc.register_succ, request_id)
 
-    def login(self, request_id, ip, nick, pswd):
-        """Войти в систему с именем nick и хэшем pswd пароля"""
+    def login(self, request_id, ip, nick, pswd, pub_key):
+        """Войти в систему с именем nick, хэшем pswd пароля
+        и публичным ключом pub_key"""
         c = self.db.cursor()
         c.execute('''SELECT name FROM users
                      WHERE name = %s AND password = %s''', (nick, pswd))
@@ -312,17 +361,16 @@ class Processor:
             return self._pack(sc.login_error, request_id)
 
         try:
-            session_id = self._add_session(nick, ip)
+            self._add_session(nick, pub_key, ip)
         except BadRequest:
             return self._pack(sc.login_error, request_id)
 
         c.close()
-        return self._pack(sc.login_succ, request_id, session_id)
+        return self._pack(sc.login_succ, request_id)
 
-    def search_username(self, request_id, ip, session_id, user):
+    def search_username(self, request_id, ip, user):
         """Найти среди пользователей тех, чье имя содержит подстроку user"""
         c = self.db.cursor()
-        self._check_session(session_id, ip)
         c.execute('''SELECT name FROM users
                      WHERE POSITION(%s IN name) > 0''', (user,))
         search_results = [row['name'] for row in c.fetchall()]
@@ -330,11 +378,11 @@ class Processor:
         return self._pack(sc.search_username_result, request_id,
                           search_results)
 
-    def friends_group(self, request_id, ip, session_id):
+    def friends_group(self, request_id, ip):
         """Получить список друзей, сгрупированных в списки:
         онлайн, оффлайн, избранные, черный список"""
         c = self.db.cursor()
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         c.execute('''SELECT friends::text[],
                             favorites::text[],
                             blacklist::text[]
@@ -355,7 +403,7 @@ class Processor:
         return self._pack(sc.friends_group_response, request_id,
                           [online, offline, fav, bl])
 
-    def message_history(self, request_id, ip, session_id, count, dialog):
+    def message_history(self, request_id, ip, count, dialog):
         """Получить count последних сообщений из диалога dialog
         Если count = 0, возвращает все сообщения
         Вызывает BadRequest, если count < 0"""
@@ -363,7 +411,7 @@ class Processor:
         if count < 0:
             raise BadRequest
 
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_in_dialog(nick, dialog)
 
         c.execute('''SELECT * FROM d{}
@@ -372,14 +420,14 @@ class Processor:
         c.close()
         return self._pack(sc.message_history, request_id, msgs[-count:])
 
-    def send_message(self, request_id, ip, session_id, msg, tm, dialog):
+    def send_message(self, request_id, ip, msg, tm, dialog):
         """Отправить сообщение msg с временем tm в диалог под номером dialog
         Вызывает BadRequest, если отправитель находится в черном списке
         собеседника или длина сообщения превышает 1000 символов"""
         max_msg_length = 1000
         if len(msg) > max_msg_length:
             raise BadRequest
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_in_dialog(nick, dialog)
 
         c = self.db.cursor()
@@ -396,12 +444,12 @@ class Processor:
         c.close()
         return self._pack(sc.message_received, request_id)
 
-    def change_profile_section(self, request_id, ip, session_id, sect, change):
+    def change_profile_section(self, request_id, ip, sect, change):
         """Заменить секцию профиля sect на change
         Вызывает BadRequest, если дата рождения (секция 2)
         меняется на что-то кроме целого числа
         или указана несуществующая секция"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
 
         birthday = 2
         if not isinstance(change, int) and sect == birthday:
@@ -425,10 +473,10 @@ class Processor:
         c.close()
         return self._pack(sc.change_profile_section_succ, request_id)
 
-    def add_to_blacklist(self, request_id, ip, session_id, user):
+    def add_to_blacklist(self, request_id, ip, user):
         """Добавить пользователя user в черный список
         Вызывает BadRequest, если отправитель пытается добавить себя"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         if nick == user:
             raise BadRequest
@@ -439,20 +487,20 @@ class Processor:
         self._remove_add_request(user, nick)
         return self._pack(sc.add_to_blacklist_succ, request_id)
 
-    def delete_from_friends(self, request_id, ip, session_id, user):
+    def delete_from_friends(self, request_id, ip, user):
         """Удалить пользователя user из друзей"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_from(nick, user, 'friends')
         self._remove_from(nick, user, 'favorites')
         return self._pack(sc.delete_from_friends_succ, request_id)
 
-    def send_request(self, request_id, ip, session_id, user, msg):
+    def send_request(self, request_id, ip, user, msg):
         """Отправить пользователю user запрос на добавление с сообщением msg
         Вызывает BadRequest, если уже отправлен запрос этому пользователю
         или отправитель пытается отправить запрос на добавление себе
         или тому, в чьем черном списке или друзьях он находится"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         if nick == user:
             raise BadRequest
@@ -480,9 +528,9 @@ class Processor:
         c.close()
         return self._pack(sc.send_request_succ, request_id)
 
-    def delete_profile(self, request_id, ip, session_id):
+    def delete_profile(self, request_id, ip):
         """Удалить свой профиль"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         nick_tuple = (nick,)
         c = self.db.cursor()
         c.execute('''SELECT friends::text[], dialogs::text[] FROM users
@@ -492,7 +540,7 @@ class Processor:
         c.execute('''DELETE FROM requests
                      WHERE from_who = %s OR to_who = %s''', nick_tuple * 2)
 
-        self._close_session(session_id)
+        self._close_session(ip)
 
         for i in friends:
             self._remove_from(i, nick, 'friends')
@@ -514,17 +562,16 @@ class Processor:
         c.close()
         return self._pack(sc.delete_profile_succ, request_id)
 
-    def logout(self, request_id, ip, session_id):
+    def logout(self, request_id, ip):
         """Выйти из системы"""
-        self._check_session(session_id, ip)
-        self._close_session(session_id)
+        self._close_session(ip)
         return self._pack(sc.logout_succ, request_id)
 
-    def create_dialog(self, request_id, ip, session_id, user):
+    def create_dialog(self, request_id, ip, user):
         """Создать диалог с пользователем user
         Вызывает BadRequest, если пользователь user
         не находится в друзьях отправителя"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
 
         c = self.db.cursor()
@@ -555,14 +602,15 @@ class Processor:
         c.close()
         return self._pack(sc.create_dialog_succ, request_id)
 
-    def profile_info(self, request_id, ip, session_id, user):
+    def profile_info(self, request_id, ip, user):
         """Получить информацию о пользователе user
         Вызывает BadRequest, если отправитель находится
         в черном списке пользователя user"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         if self._is_blacklisted(nick, user):
             raise BadRequest
+
         c = self.db.cursor()
         c.execute('''SELECT status, email, birthday, about, image FROM profiles
                      WHERE name = %s''', (user,))
@@ -570,27 +618,28 @@ class Processor:
         *info, img_data = tuple(c.fetchone())
 
         c.close()
-        return self._pack(sc.profile_info, request_id, *info) + b',' + bytes(img_data)
+        return (self._pack(sc.profile_info, request_id, *info) +
+                b',' + bytes(img_data))
 
-    def remove_from_blacklist(self, request_id, ip, session_id, user):
+    def remove_from_blacklist(self, request_id, ip, user):
         """Удалить пользователя user из черного списка отправителя"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_from(nick, user, 'blacklist')
         return self._pack(sc.remove_from_blacklist_succ, request_id)
 
-    def take_request_back(self, request_id, ip, session_id, user):
+    def take_request_back(self, request_id, ip, user):
         """Отменить запрос от отправителя к пользователю user"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_add_request(nick, user)
         return self._pack(sc.take_request_back_succ, request_id)
 
-    def confirm_add_request(self, request_id, ip, session_id, user):
+    def confirm_add_request(self, request_id, ip, user):
         """Принять запрос на добавление от пользователя user отправителем
         Вызывает BadRequest, если пользователь user
         находится в черном списке отправителя"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         if self._is_blacklisted(user, nick):
             raise BadRequest
@@ -599,17 +648,17 @@ class Processor:
         self._add_to(nick, user, 'friends')
         return self._pack(sc.confirm_add_request_succ, request_id)
 
-    def add_to_favorites(self, request_id, ip, session_id, user):
+    def add_to_favorites(self, request_id, ip, user):
         """Добавить пользователя user в избранное отправителя
         Вызывает BadRequest, если пользователь user
         не находится в друзьях отправителя"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
 
         c = self.db.cursor()
         c.execute('''SELECT name FROM users
                      WHERE name = %s AND %s = ANY(friends::text[])''',
-                       (nick, user))
+                  (nick, user))
         if not c.fetchone():
             raise BadRequest
         self._add_to(nick, user, 'favorites')
@@ -617,24 +666,24 @@ class Processor:
         c.close()
         return self._pack(sc.add_to_favorites_succ, request_id)
 
-    def delete_dialog(self, request_id, ip, session_id, dialog):
+    def delete_dialog(self, request_id, ip, dialog):
         """Удалить диалог под номером dialog от лица отправителя
         Вызывает BadRequest, если dialog не является целым числом"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         if not isinstance(dialog, int):
             raise BadRequest
         self._user_in_dialog(nick, dialog)
         self._delete_dialog(dialog, nick)
         return self._pack(sc.delete_dialog_succ, request_id)
 
-    def search_msg(self, request_id, ip, session_id, dialog, text, lower_tm, upper_tm):
+    def search_msg(self, request_id, ip, dialog, text, lower_tm, upper_tm):
         """Найти в диалоге под номером dialog сообщение,
         содержащее строку text и отправленное между
         временами lower_tm и upper_tm
         Вызывает BadRequest, если lower_tm > upper_tm"""
         if lower_tm > upper_tm:
             raise BadRequest
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_in_dialog(nick, dialog)
 
         c = self.db.cursor()
@@ -647,16 +696,16 @@ class Processor:
         c.close()
         return self._pack(sc.search_msg_result, request_id, list(result))
 
-    def remove_from_favorites(self, request_id, ip, session_id, user):
+    def remove_from_favorites(self, request_id, ip, user):
         """Удалить пользователя user из избранного отправителя"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_from(nick, user, 'favorites')
         return self._pack(sc.remove_from_favorites_succ, request_id)
 
-    def add_requests(self, request_id, ip, session_id):
+    def add_requests(self, request_id, ip):
         """Получить запросы на добавление к отправителю"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         c = self.db.cursor()
         c.execute('''SELECT from_who, message FROM requests
                      WHERE to_who = %s''', (nick,))
@@ -664,17 +713,17 @@ class Processor:
         c.close()
         return self._pack(sc.add_requests, request_id, list(result))
 
-    def decline_add_request(self, request_id, ip, session_id, user):
+    def decline_add_request(self, request_id, ip, user):
         """Отменить запрос на добавление от пользователя user к отправителю"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_add_request(user, nick)
         return self._pack(sc.decline_add_request_succ, request_id)
 
-    def set_image(self, request_id, ip, session_id, img_data):
+    def set_image(self, request_id, ip, img_data):
         """Установить в качестве изображения пользователя картинку,
         бинарные данные которой находятся в img_data"""
-        nick = self._check_session(session_id, ip)
+        nick = self._get_nick(ip)
         c = self.db.cursor()
         with self.db:
             c.execute('''UPDATE profiles SET image = %s
@@ -683,9 +732,9 @@ class Processor:
         c.close()
         return self._pack(sc.set_image_succ, request_id)
 
-    def get_dialogs(self, request_id, ip, session_id):
-        """Получить диалоги"""
-        nick = self._check_session(session_id, ip)
+    def get_dialogs(self, request_id, ip):
+        """Получить список диалогов"""
+        nick = self._get_nick(ip)
         dialogs = []
 
         c = self.db.cursor()

@@ -1,10 +1,10 @@
-import unittest, time
-from processors import *
-from request_handler import RequestHandler
+import unittest, time, rsa
 from hashlib import sha256
 from installer import Installer
 
-Installer.install()
+Installer().install()
+from processors import *
+from request_handler import RequestHandler
 
 class TestProcessor(unittest.TestCase):
     rh = RequestHandler()
@@ -14,41 +14,86 @@ class TestProcessor(unittest.TestCase):
 
     nick = 'test_user'
     ip = 'test_ip'
+    pub_key, priv_key = rsa.newkeys(2048, accurate = False)
     pswd = sha256(b'pswdmysalt').hexdigest()
     request_id = '0'
-    session_id = sha256((nick + ip).encode()).hexdigest()
+    key_strings = list(map(str, pub_key.__getstate__()))
+
+    def test__get_public_key(self):
+        _get_public_key = self.pr._get_public_key
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
+
+        self.assertEqual(_get_public_key(self.ip), self.pub_key)
+
+        self.pr._close_session(self.ip)
+        with self.assertRaises(BadRequest):
+            _get_public_key(self.ip)
+
+    def test__decrypt(self):
+        _decrypt = self.pr._decrypt
+        c = self.pr.db.cursor()
+
+        c.execute('''SELECT pub_key FROM key''')
+        n, e = c.fetchone()['pub_key']
+        server_pub = rsa.PublicKey(int(n), int(e))
+
+        base = b'Hello, World'
+        enc = rsa.encrypt(base, server_pub)
+        self.assertEqual(_decrypt(enc), base)
+
+        rand_bytes = b'not_encrypted'
+        with self.assertRaises(BadRequest):
+            _decrypt(rand_bytes)
+
+        self.pr.db.commit()
+        c.close()
+
+    def test__encrypt(self):
+        _encrypt = self.pr._encrypt
+
+        base = b'Hello, World'
+        enc = _encrypt(base, self.pub_key)
+        self.assertEqual(rsa.decrypt(enc, self.priv_key), base)
+
+    def test__verify_signature(self):
+        _verify_signature = self.pr._verify_signature
+
+        base = b'Hello, World'
+        sign = rsa.sign(base, self.priv_key, 'SHA-256')
+        _verify_signature(base, sign, self.pub_key)
+
+        rand_bytes = b'not_a_signature'
+        with self.assertRaises(BadRequest):
+            _verify_signature(base, rand_bytes, self.pub_key)
 
     def test__add_session(self):
         _add_session = self.pr._add_session
         c = self.pr.db.cursor()
 
-        _add_session(self.nick, self.ip)
+        _add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''SELECT * FROM sessions
-                     WHERE name = %s AND session_id = %s
-                     AND ip = %s''', (self.nick, self.session_id, self.ip))
+                     WHERE name = %s AND pub_key = %s
+                     AND ip = %s''', (self.nick, self.key_strings, self.ip))
         self.assertIsNotNone(c.fetchone())
 
         with self.assertRaises(BadRequest):
-            _add_session(self.nick, self.ip)
+            _add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
         self.pr.db.commit()
         c.close()
 
-    def test__check_session(self):
-        _check_session = self.pr._check_session
+    def test__get_nick(self):
+        _get_nick = self.pr._get_nick
 
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
-        act_nick = _check_session(self.session_id,
-                                  self.ip)
+        act_nick = _get_nick(self.ip)
         self.assertEqual(self.nick, act_nick)
 
+        self.pr._close_session(self.ip)
         with self.assertRaises(BadRequest):
-            _check_session(self.session_id + '0',
-                           self.ip)
-
-        self.pr._close_session(self.session_id)
+            _get_nick(self.ip)
 
     def test__pack(self):
         act1 = self.pr._pack('0', 1, [(2, 3), 4])
@@ -56,11 +101,18 @@ class TestProcessor(unittest.TestCase):
         self.assertEqual(act1, exp1)
 
     def test__close_session(self):
+        _close_session = self.pr._close_session
         c = self.pr.db.cursor()
 
-        self.pr._close_session(self.session_id)
+        _close_session(self.ip)
+
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''SELECT * FROM sessions
-                     WHERE session_id = %s''', (self.session_id,))
+                     WHERE pub_key = %s''', (self.key_strings,))
+        self.assertIsNotNone(c.fetchone())
+        _close_session(self.ip)
+        c.execute('''SELECT * FROM sessions
+                     WHERE pub_key = %s''', (self.key_strings,))
         self.assertIsNone(c.fetchone())
         self.pr.db.commit()
         c.close()
@@ -314,9 +366,10 @@ class TestProcessor(unittest.TestCase):
         resp1 = self.unpack(register(self.request_id,
                                      self.ip,
                                      self.nick,
-                                     self.pswd))
+                                     self.pswd,
+                                     ':'.join(self.key_strings)))
         exp1 = (sc.register_succ,
-                [self.request_id, self.session_id])
+                [self.request_id])
         self.assertTupleEqual(resp1, exp1)
 
         c.execute('''SELECT name, password, friends::text[],
@@ -335,7 +388,8 @@ class TestProcessor(unittest.TestCase):
         resp2 = self.unpack(register(self.request_id,
                                      self.ip,
                                      self.nick,
-                                     self.pswd))
+                                     self.pswd,
+                                     ':'.join(self.key_strings)))
         exp2 = (sc.register_error,
                 [self.request_id])
         self.assertTupleEqual(resp2, exp2)
@@ -343,14 +397,15 @@ class TestProcessor(unittest.TestCase):
         resp3 = self.unpack(register(self.request_id,
                                      self.ip,
                                      '~' + self.nick,
-                                     self.pswd))
+                                     self.pswd,
+                                     ':'.join(self.key_strings)))
         self.assertTupleEqual(resp3, exp2)
 
         c.execute('''DELETE FROM profiles
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
         self.pr.db.commit()
         c.close()
 
@@ -368,16 +423,17 @@ class TestProcessor(unittest.TestCase):
         resp1 = self.unpack(login(self.request_id,
                                   self.ip,
                                   self.nick,
-                                  self.pswd))
+                                  self.pswd,
+                                  ':'.join(self.key_strings)))
         exp1 = (sc.login_succ,
-                [self.request_id,
-                 self.session_id])
+                [self.request_id])
         self.assertEqual(resp1, exp1)
 
         resp2 = self.unpack(login(self.request_id,
                                   self.ip,
                                   self.nick,
-                                  self.pswd))
+                                  self.pswd,
+                                  ':'.join(self.key_strings)))
         exp2 = (sc.login_error,
                 [self.request_id])
         self.assertEqual(resp2, exp2)
@@ -388,10 +444,11 @@ class TestProcessor(unittest.TestCase):
         resp3 = self.unpack(login(self.request_id,
                                   self.ip,
                                   self.nick,
-                                  self.pswd))
+                                  self.pswd,
+                                  ':'.join(self.key_strings)))
         self.assertEqual(resp3, exp2)
 
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -405,7 +462,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         users = ('user1', 'user10', 'user2')
         for i in users:
             c.execute('''INSERT INTO users
@@ -416,7 +473,6 @@ class TestProcessor(unittest.TestCase):
 
         resp1 = self.unpack(search_username(self.request_id,
                                             self.ip,
-                                            self.session_id,
                                             'user1'))
         exp1 = (sc.search_username_result,
                 [self.request_id,
@@ -427,7 +483,6 @@ class TestProcessor(unittest.TestCase):
 
         resp2 = self.unpack(search_username(self.request_id,
                                             self.ip,
-                                            self.session_id,
                                             'user'))
         exp2 = (sc.search_username_result,
                 [self.request_id,
@@ -438,7 +493,7 @@ class TestProcessor(unittest.TestCase):
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
         for i in users:
             c.execute('''DELETE FROM users
                          WHERE name = %s''', (i,))
@@ -457,7 +512,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY['user2'],
                                      ARRAY['user3'],
                                      ARRAY[]::text[])''', (self.nick,))
-        _add_session(self.nick, self.ip)
+        _add_session(self.nick, ':'.join(self.key_strings), self.ip)
         users = ('user1', 'user10', 'user2', 'users3')
         for i in users:
             c.execute('''INSERT INTO users
@@ -465,12 +520,11 @@ class TestProcessor(unittest.TestCase):
                                          ARRAY[]::text[],
                                          ARRAY[]::text[],
                                          ARRAY[]::text[])''', (i,))
-        sess1 = _add_session('user1', '')
-        sess2 = _add_session('user2', '')
+        _add_session('user1', '1:2', '1.1.1.1')
+        _add_session('user2', '3:4', '2.2.2.2')
 
         resp = self.unpack(friends_group(self.request_id,
-                                         self.ip,
-                                         self.session_id))
+                                         self.ip))
         exp = (sc.friends_group_response,
                [self.request_id,
                 [['user1', 'user2'],
@@ -482,9 +536,9 @@ class TestProcessor(unittest.TestCase):
         for i in range(len(resp[1][0])):
             self.assertListEqual(sorted(resp[1][1][i]), exp[1][1][i])
 
-        _close_session(self.session_id)
-        _close_session(sess1)
-        _close_session(sess2)
+        _close_session(self.ip)
+        _close_session('1.1.1.1')
+        _close_session('2.2.2.2')
         for i in users:
             c.execute('''DELETE FROM users
                          WHERE name = %s''', (i,))
@@ -503,7 +557,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY['0'])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''CREATE TABLE "d0" (content text,
                                         timestamp bigint,
                                         sender text)''')
@@ -517,13 +571,11 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             message_history(self.request_id,
                             self.ip,
-                            self.session_id,
                             -1,
                             0)
 
         resp1 = self.unpack(message_history(self.request_id,
                                             self.ip,
-                                            self.session_id,
                                             2,
                                             0))
         exp1 = (sc.message_history,
@@ -532,7 +584,6 @@ class TestProcessor(unittest.TestCase):
 
         resp2 = self.unpack(message_history(self.request_id,
                                             self.ip,
-                                            self.session_id,
                                             0,
                                             0))
         exp2 = (sc.message_history,
@@ -542,7 +593,7 @@ class TestProcessor(unittest.TestCase):
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
         c.execute('''DROP TABLE "d0"''')
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -557,7 +608,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY['0'])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''CREATE TABLE "d0" (content text,
                                         timestamp bigint,
                                         sender text)''')
@@ -573,7 +624,6 @@ class TestProcessor(unittest.TestCase):
         msg_args = ['test', int(time.time() * 100), 0]
         resp1 = self.unpack(send_message(self.request_id,
                                          self.ip,
-                                         self.session_id,
                                          *msg_args))
         exp1 = (sc.message_received,
                 [self.request_id])
@@ -588,7 +638,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             send_message(self.request_id,
                          self.ip,
-                         self.session_id,
                          '0' * 1001,
                          0,
                          self.nick)
@@ -598,7 +647,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             send_message(self.request_id,
                          self.ip,
-                         self.session_id,
                          *msg_args)
 
         c.execute('''DELETE FROM users
@@ -606,7 +654,7 @@ class TestProcessor(unittest.TestCase):
         c.execute('''DROP TABLE "d0"''')
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (other_user,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -623,11 +671,10 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[])''', (self.nick,))
         c.execute('''INSERT INTO profiles
                      VALUES (%s, '', '', 0, '', E'')''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
         resp = self.unpack(change_profile_section(self.request_id,
                                                   self.ip,
-                                                  self.session_id,
                                                   0,
                                                   change))
         exp = (sc.change_profile_section_succ,
@@ -641,14 +688,12 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             change_profile_section(self.request_id,
                                    self.ip,
-                                   self.session_id,
                                    2,
                                    'not_int')
 
         with self.assertRaises(BadRequest):
             change_profile_section(self.request_id,
                                    self.ip,
-                                   self.session_id,
                                    4,
                                    b'PNG')
 
@@ -656,7 +701,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -673,7 +718,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''',
                   (self.nick, user1, user1))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -689,7 +734,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(add_to_blacklist(self.request_id,
                                             self.ip,
-                                            self.session_id,
                                             user1))
         exp = (sc.add_to_blacklist_succ,
                [self.request_id])
@@ -697,13 +741,11 @@ class TestProcessor(unittest.TestCase):
 
         add_to_blacklist(self.request_id,
                          self.ip,
-                         self.session_id,
                          user2)
 
         with self.assertRaises(BadRequest):
             add_to_blacklist(self.request_id,
                              self.ip,
-                             self.session_id,
                              self.nick)
 
         c.execute('''SELECT friends::text[],
@@ -723,7 +765,7 @@ class TestProcessor(unittest.TestCase):
         c.execute('''DELETE FROM users
                      WHERE name = %s OR name = %s
                      OR name = %s''', (self.nick, user1, user2))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -739,7 +781,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''',
                   (self.nick, user1, user1))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -748,7 +790,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(delete_from_friends(self.request_id,
                                            self.ip,
-                                           self.session_id,
                                            user1))
         exp = (sc.delete_from_friends_succ,
                [self.request_id])
@@ -765,7 +806,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (user1,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -780,7 +821,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -789,7 +830,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(send_request(self.request_id,
                                         self.ip,
-                                        self.session_id,
                                         user1,
                                         ''))
         exp = (sc.send_request_succ,
@@ -804,7 +844,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             send_request(self.request_id,
                          self.ip,
-                         self.session_id,
                          user1,
                          '')
 
@@ -816,7 +855,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             send_request(self.request_id,
                          self.ip,
-                         self.session_id,
                          user1,
                          '')
 
@@ -825,7 +863,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             send_request(self.request_id,
                          self.ip,
-                         self.session_id,
                          user1,
                          '')
 
@@ -833,7 +870,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (user1,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -852,7 +889,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY['0'])''',
                   (self.nick, user1, user1))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO profiles
                      VALUES (%s, '', '', 0, '', E'')''', (self.nick,))
         c.execute('''INSERT INTO users
@@ -877,8 +914,7 @@ class TestProcessor(unittest.TestCase):
                      VALUES (%s, %s, '')''', (self.nick, user4))
 
         resp = self.unpack(delete_profile(self.request_id,
-                                          self.ip,
-                                          self.session_id))
+                                          self.ip))
         exp = (sc.delete_profile_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -911,10 +947,10 @@ class TestProcessor(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [])
 
         c.execute('''SELECT name FROM sessions
-                     WHERE session_id = %s''', (self.session_id,))
+                     WHERE ip = %s''', (self.ip,))
         self.assertIsNone(c.fetchone())
 
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (user1,))
         c.execute('''DELETE FROM users
@@ -927,17 +963,16 @@ class TestProcessor(unittest.TestCase):
         logout = self.pr.logout
         c = self.pr.db.cursor()
 
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
         resp = self.unpack(logout(self.request_id,
-                                  self.ip,
-                                  self.session_id))
+                                  self.ip))
         exp = (sc.logout_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
         c.execute('''SELECT * FROM sessions
-                     WHERE session_id = %s''', (self.session_id,))
+                     WHERE ip = %s''', (self.ip,))
         self.assertIsNone(c.fetchone())
 
         self.pr.db.commit()
@@ -955,7 +990,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY['0'])''',
                   (self.nick, user1 + ',' + user2))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[%s],
                                      ARRAY[]::text[],
@@ -977,7 +1012,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(create_dialog(self.request_id,
                                          self.ip,
-                                         self.session_id,
                                          user1))
         exp = (sc.create_dialog_succ,
                [self.request_id])
@@ -985,7 +1019,6 @@ class TestProcessor(unittest.TestCase):
 
         create_dialog(self.request_id,
                       self.ip,
-                      self.session_id,
                       user2)
         c.execute('''SELECT dialogs::text[] FROM users
                      WHERE name = %s''', (user1,))
@@ -1010,7 +1043,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             create_dialog(self.request_id,
                           self.ip,
-                          self.session_id,
                           user3)
 
         c.execute('''DELETE FROM users
@@ -1023,13 +1055,12 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (user3,))
         c.execute('''DROP TABLE "d0"''')
         c.execute('''DROP TABLE "{}"'''.format(dlg1_name))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
 
     def test_profile_info(self):
-        # ALERT
         profile_info = self.pr.profile_info
         c = self.pr.db.cursor()
         status = 'status'
@@ -1041,7 +1072,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO profiles
                      VALUES (%s, %s, %s, 0, '', E'')''',
                   (self.nick, status, email))
@@ -1053,7 +1084,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(profile_info(self.request_id,
                                         self.ip,
-                                        self.session_id,
                                         self.nick))
         exp = (sc.profile_info,
                [self.request_id,
@@ -1067,7 +1097,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             profile_info(self.request_id,
                          self.ip,
-                         self.session_id,
                          user1)
 
         c.execute('''DELETE FROM profiles
@@ -1076,7 +1105,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (user1,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1091,7 +1120,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[%s],
                                      ARRAY[]::text[])''', (self.nick, user1))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -1100,7 +1129,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(remove_from_blacklist(self.request_id,
                                                  self.ip,
-                                                 self.session_id,
                                                  user1))
         exp = (sc.remove_from_blacklist_succ,
                [self.request_id])
@@ -1112,7 +1140,7 @@ class TestProcessor(unittest.TestCase):
 
         c.execute('''DELETE FROM users
                      WHERE name = %s OR name = %s''', (self.nick, user1))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1127,7 +1155,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -1138,7 +1166,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(take_request_back(self.request_id,
                                              self.ip,
-                                             self.session_id,
                                              user1))
         exp = (sc.take_request_back_succ,
                [self.request_id])
@@ -1151,7 +1178,7 @@ class TestProcessor(unittest.TestCase):
 
         c.execute('''DELETE FROM users
                      WHERE name = %s OR name = %s''', (self.nick, user1))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1167,7 +1194,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[%s],
                                      ARRAY[]::text[])''', (self.nick, user2))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -1185,7 +1212,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(confirm_add_request(self.request_id,
                                                self.ip,
-                                               self.session_id,
                                                user1))
         exp = (sc.confirm_add_request_succ,
                [self.request_id])
@@ -1209,7 +1235,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             confirm_add_request(self.request_id,
                                 self.ip,
-                                self.session_id,
                                 user2)
 
         c.execute('''DELETE FROM users
@@ -1220,7 +1245,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (user2,))
         c.execute('''DELETE FROM requests
                      WHERE from_who = %s''', (user2,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1235,7 +1260,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick, user1))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[%s],
                                      ARRAY[]::text[],
@@ -1244,7 +1269,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(add_to_favorites(self.request_id,
                                             self.ip,
-                                            self.session_id,
                                             user1))
         exp = (sc.add_to_favorites_succ,
                [self.request_id])
@@ -1258,7 +1282,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (user1,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1272,7 +1296,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY['0'])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''CREATE TABLE "d0" (content text,
                                         timestamp bigint,
                                         sender text)''')
@@ -1281,7 +1305,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(delete_dialog(self.request_id,
                                          self.ip,
-                                         self.session_id,
                                          0))
         exp = (sc.delete_dialog_succ,
                [self.request_id])
@@ -1294,12 +1317,11 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             delete_dialog(self.request_id,
                           self.ip,
-                          self.session_id,
                           'not_int')
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1319,7 +1341,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY['0'])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''CREATE TABLE "d0" (content text,
                                         timestamp bigint,
                                         sender text)''')
@@ -1328,7 +1350,6 @@ class TestProcessor(unittest.TestCase):
 
         resp1 = self.unpack(search_msg(self.request_id,
                                        self.ip,
-                                       self.session_id,
                                        0,
                                        'test_mess',
                                        50,
@@ -1340,7 +1361,6 @@ class TestProcessor(unittest.TestCase):
 
         resp2 = self.unpack(search_msg(self.request_id,
                                        self.ip,
-                                       self.session_id,
                                        0,
                                        'look',
                                        50,
@@ -1352,7 +1372,6 @@ class TestProcessor(unittest.TestCase):
 
         resp3 = self.unpack(search_msg(self.request_id,
                                        self.ip,
-                                       self.session_id,
                                        0,
                                        'look nowhere',
                                        0,
@@ -1365,7 +1384,6 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             search_msg(self.request_id,
                        self.ip,
-                       self.session_id,
                        0,
                        'smth',
                        100,
@@ -1374,7 +1392,7 @@ class TestProcessor(unittest.TestCase):
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
         c.execute('''DROP TABLE "d0"''')
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1390,7 +1408,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''',
                   (self.nick, user1, user1))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[%s],
                                      ARRAY[]::text[],
@@ -1399,7 +1417,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(remove_from_favorites(self.request_id,
                                                  self.ip,
-                                                 self.session_id,
                                                  user1))
         exp = (sc.remove_from_favorites_succ,
                [self.request_id])
@@ -1414,7 +1431,7 @@ class TestProcessor(unittest.TestCase):
 
         c.execute('''DELETE FROM users
                      WHERE name = %s OR name = %s''', (self.nick, user1))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1430,15 +1447,14 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO requests
                      VALUES (%s, %s, 'hello')''', (user1, self.nick))
         c.execute('''INSERT INTO requests
                      VALUES (%s, %s, 'wrong')''', (user1, user2))
 
         resp = self.unpack(add_requests(self.request_id,
-                                        self.ip,
-                                        self.session_id))
+                                        self.ip))
         exp = (sc.add_requests,
                [self.request_id,
                 [[user1, 'hello']]])
@@ -1448,7 +1464,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM requests
                      WHERE from_who = %s''', (user1,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1463,7 +1479,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
                                      ARRAY[]::text[],
@@ -1474,7 +1490,6 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(decline_add_request(self.request_id,
                                                self.ip,
-                                               self.session_id,
                                                user1))
         exp = (sc.decline_add_request_succ,
                [self.request_id])
@@ -1489,7 +1504,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (user1,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1506,11 +1521,10 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[])''', (self.nick,))
         c.execute('''INSERT INTO profiles
                      VALUES (%s, '', '', 0, '', E'')''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
         resp = self.unpack(set_image(self.request_id,
                                      self.ip,
-                                     self.session_id,
                                      img))
         exp = (sc.set_image_succ,
                [self.request_id])
@@ -1524,7 +1538,7 @@ class TestProcessor(unittest.TestCase):
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
@@ -1540,7 +1554,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY['0', '1'])''', (self.nick,))
-        self.pr._add_session(self.nick, self.ip)
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
         c.execute('''CREATE TABLE "d0" (content text,
                                         timestamp bigint,
@@ -1554,8 +1568,7 @@ class TestProcessor(unittest.TestCase):
                      VALUES ('test', 0, %s)''', (user2,))
 
         resp = self.unpack(get_dialogs(self.request_id,
-                                       self.ip,
-                                       self.session_id))
+                                       self.ip))
         exp = (sc.get_dialogs_resp,
                [self.request_id,
                 [['0', user1],
@@ -1566,10 +1579,11 @@ class TestProcessor(unittest.TestCase):
         c.execute('''DROP TABLE "d1"''')
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.session_id)
+        self.pr._close_session(self.ip)
 
         self.pr.db.commit()
         c.close()
 
 if __name__ == '__main__':
     unittest.main()
+

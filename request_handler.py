@@ -4,6 +4,7 @@ from flask import Flask, request as flask_request
 
 app = Flask(__name__)
 
+
 class RequestHandler:
     pr = Processor()
     handler_map = {
@@ -34,7 +35,8 @@ class RequestHandler:
     set_image_code = str(cc.set_image).encode()
     profile_info_code = str(sc.profile_info).encode()
 
-    @classmethod
+    o_codes = {cc.register, cc.login}
+
     def unpack_req(self, request):
         """Распаковывает запрос request"""
         if request[:2] == self.set_image_code:
@@ -49,7 +51,6 @@ class RequestHandler:
         code, *data = json.loads('[' + request.decode() + ']')
         return code, data
 
-    @classmethod
     def unpack_resp(self, response):
         """Распаковывает ответ response"""
         if response[:2] == self.profile_info_code:
@@ -65,12 +66,12 @@ class RequestHandler:
         return code, data
 
     @app.route('/', methods = ['GET', 'POST'])
-    def process():
+    def process(self):
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
 
         # Получение запроса
-        request = flask_request.data
+        enc_request = flask_request.data
         try:
             address = flask_request.headers.getlist("X-Forwarded-For")[-1]
         except IndexError:
@@ -79,41 +80,89 @@ class RequestHandler:
             return b''
 
         log.info('received request from {}'.format(address))
-        log.debug('request: {}'.format(request))
 
         try:
-            code, data = RequestHandler.unpack_req(request)
-        except ValueError:
-            # Если распаковать запрос не удалось, игнорируем
-            log.error('failed to decode request {}'.format(request))
+            request = self.pr._decrypt(enc_request)
+            log.info('decrypted request successfully')
+        except BadRequest:
+            # Если расшифровать запрос не удалось, игнорируем
+            log.error('failed to decrypt request')
+            log.debug('request: {}'.format(request))
             return b''
 
-        # Вставляем в запрос IP-адрес
+        try:
+            code, data = self.unpack_req(request)
+        except ValueError:
+            # Если распаковать запрос не удалось, игнорируем
+            log.error('failed to decode request')
+            log.debug('request: {}'.format(request))
+            return b''
+
+        is_o_request = code in self.o_codes
+        if not is_o_request:
+            sign = flask_request.headers.get('Request-Signature', '')
+            if not sign:
+                # Если подпись не указана, игнорируем
+                log.error('no signature for an N-request')
+                return b''
+
+            try:
+                pub_key = self.pr._get_public_key(address)
+            except BadRequest:
+                # Если нет сессии, открытой с IP-адреса address, игнорируем
+                log.error('failed to get public key')
+                return b''
+
+            try:
+                self.pr._verify_signature(enc_request, sign, pub_key)
+            except BadRequest:
+                # Если подпись неверная, игнорируем
+                log.error('incorrect signature')
+                return b''
+
+
+        # Вставляем в запрос IP-адрес после ID запроса
         data.insert(1, address)
 
         try:
             # Выбор обработчика запроса, соответствующего его коду
-            handler = RequestHandler.handler_map[code]
+            handler = self.handler_map[code]
             log.info('processing request with ' + handler.__name__ + '()')
 
             # Запускаем обработчик и получаем ответ
             response = handler(*data)
-
         except (TypeError, IndexError, BadRequest):
             # Если в запросе логическая ошибка, игнорируем
             log.error('bad request from {}: {}'.format(address, request))
             return b''
 
-        r_code, r_data = RequestHandler.unpack_resp(response)
-        log.info('response code: ' + sc(r_code).name)
+        # Следующий блок кода может быть небезопасен
+        r_code, r_data = self.unpack_resp(response)
+        log.info('response code: ' + str(r_code))
         log.info('response data: ' + str(r_data))
         log.debug('response: {}'.format(response))
 
-        return str(response)
+        if is_o_request:
+            pub_key = self.pr._get_public_key(address)
 
-    @classmethod
+        try:
+            enc_response = self.pr._encrypt(response, pub_key)
+        except OverflowError:
+            log.error('server response was too large to encrypt')
+            log.debug('response: {}'.format(response))
+        log.info('encrypted response successfully')
+
+        log.info('sending reponse')
+        return enc_response
+
+    @app.route('/key', methods=['GET'])
+    def get_key(self):
+        return self.pr.pub_key_str
+
     def run(self):
-        app.run(debug=True, host=os.getenv('IP', '0.0.0.0'), port=int(os.getenv('PORT', 8080)))
+        app.run(debug=True, host=os.getenv('IP', '0.0.0.0'),
+                port=int(os.getenv('PORT', 8080)))
+
 
 if __name__ == "__main__":
     log_level = logging.DEBUG
