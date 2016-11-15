@@ -34,7 +34,8 @@ class Installer:
 
         c.execute('''CREATE TABLE sessions (name text,
                                             pub_key text ARRAY,
-                                            ip text UNIQUE)''')
+                                            ip text UNIQUE,
+                                            last_active text)''')
 
         c.execute('''CREATE TABLE requests (from_who text,
                                             to_who text,

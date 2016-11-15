@@ -89,6 +89,7 @@ sc = ServerCodes
 
 # Add notificators about events
 
+
 class Processor:
     # Парсинг ссылки на базу данных
     url = urlparse(os.environ["DATABASE_URL"])
@@ -285,7 +286,7 @@ class Processor:
         else:
             c.execute('''UPDATE d{} SET sender = '~' || %s
                          WHERE sender = %s'''.format(dialog),
-                                             (user, user))
+                      (user, user))
         # Диалог с номером dialog удаляется из диалогов пользователя user
         self._remove_from(user, str(dialog), 'dialogs')
         self.db.commit()
@@ -320,6 +321,13 @@ class Processor:
                 return dialogs[i - 1] + 1
         c.close()
         return dialogs[-1] + 1
+
+    def _set_timestamp(self, address):
+        """Сохраняет текущую дату в last_active
+        таблицы sessions"""
+        stamp = datetime.now().timestamp()
+        c.execute('''UPDATE sessions SET last_active = %s
+                     WHERE ip = %s''', (str(stamp), address))
 
     def register(self, request_id, ip, nick, pswd, pub_key):
         """Зарегистрироваться с именем nick, хэшем pswd пароля

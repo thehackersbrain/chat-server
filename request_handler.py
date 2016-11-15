@@ -1,6 +1,8 @@
 import json, logging, os
+from datetime import datetime
 from processors import Processor, cc, sc, BadRequest
 from flask import Flask, request as flask_request
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 
@@ -120,7 +122,6 @@ class RequestHandler:
                 log.error('incorrect signature')
                 return b''
 
-
         # Вставляем в запрос IP-адрес после ID запроса
         data.insert(1, address)
 
@@ -151,6 +152,10 @@ class RequestHandler:
             log.error('server response was too large to encrypt')
             log.debug('response: {}'.format(response))
         log.info('encrypted response successfully')
+
+        # Записываем текущую дату
+        self.pr._set_timestamp(address)
+        log.info('set new timestamp for: ' + address)
 
         log.info('sending reponse')
         return enc_response
