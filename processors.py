@@ -2,6 +2,7 @@ import psycopg2, psycopg2.extras
 import json, re, os
 import rsa, rsa.pkcs1
 from urllib.parse import urlparse
+from datetime import datetime
 
 sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
               b'\x00\x00\x00\x01\x00\x00\x00\x01\x08'
@@ -325,9 +326,12 @@ class Processor:
     def _set_timestamp(self, address):
         """Сохраняет текущую дату в last_active
         таблицы sessions"""
+        c = self.db.cursor()
         stamp = datetime.now().timestamp()
         c.execute('''UPDATE sessions SET last_active = %s
                      WHERE ip = %s''', (str(stamp), address))
+
+        c.close()
 
     def register(self, request_id, ip, nick, pswd, pub_key):
         """Зарегистрироваться с именем nick, хэшем pswd пароля

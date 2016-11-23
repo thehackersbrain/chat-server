@@ -1,8 +1,6 @@
 import json, logging, os
-from datetime import datetime
 from processors import Processor, cc, sc, BadRequest
 from flask import Flask, request as flask_request
-from urllib.parse import urlparse
 
 app = Flask(__name__)
 

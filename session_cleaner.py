@@ -1,4 +1,4 @@
-import logging, psycopg2
+import logging, os, psycopg2
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
