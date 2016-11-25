@@ -30,7 +30,6 @@ log.info('starting up')
 
 # Получаем текущую дату и время
 stamp = datetime.now()
-log.debug('current timestamp is' + str(stamp.timestamp()))
 
 # Вычитаем два часа
 stamp -= timedelta(hours = 2)
@@ -38,9 +37,10 @@ log.debug('will remove everything older than' + str(stamp.timestamp()))
 
 # Удаляем все записи, в которых время меньше stamp
 c.execute('''DELETE FROM sessions
-             WHERE last_active < %s''', (str(stamp.timestamp()), ))
-log.info('done')
+             WHERE last_active < %s''', (int(stamp.timestamp()), ))
 
 db.commit()
+log.info('done')
+
 c.close()
 db.close()

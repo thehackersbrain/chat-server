@@ -329,7 +329,7 @@ class Processor:
         c = self.db.cursor()
         stamp = datetime.now().timestamp()
         c.execute('''UPDATE sessions SET last_active = %s
-                     WHERE ip = %s''', (str(stamp), address))
+                     WHERE ip = %s''', (int(stamp), address))
 
         c.close()
 

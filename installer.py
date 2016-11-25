@@ -28,14 +28,14 @@ class Installer:
 
                                             status text,
                                             email text,
-                                            birthday int,
+                                            birthday bigint,
                                             about text,
                                             image bytea)''')
 
         c.execute('''CREATE TABLE sessions (name text,
                                             pub_key text ARRAY,
                                             ip text UNIQUE,
-                                            last_active text)''')
+                                            last_active bigint)''')
 
         c.execute('''CREATE TABLE requests (from_who text,
                                             to_who text,
