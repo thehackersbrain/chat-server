@@ -29,14 +29,28 @@ class RequestHandler:
         cc.add_to_favorites:          pr.add_to_favorites,
         cc.delete_dialog:             pr.delete_dialog,
         cc.search_msg:                pr.search_msg,
+        cc.remove_from_favorites:     pr.remove_from_favorites,
         cc.get_add_requests:          pr.add_requests,
         cc.decline_add_request:       pr.decline_add_request,
-        cc.set_image:                 pr.set_image
+        cc.set_image:                 pr.set_image,
+        cc.get_dialogs:               pr.get_dialogs
     }
     set_image_code = str(cc.set_image).encode()
     profile_info_code = str(sc.profile_info).encode()
 
     o_codes = {cc.register, cc.login}
+    t_codes = {cc.login,
+               cc.send_message,
+               cc.add_to_blacklist,
+               cc.delete_from_friends,
+               cc.send_request,
+               cc.delete_profile,
+               cc.logout,
+               cc.remove_from_blacklist,
+               cc.take_request_back,
+               cc.confirm_add_request,
+               cc.decline_add_request}
+
     connections = {}
 
     def unpack_req(self, request):
@@ -67,7 +81,7 @@ class RequestHandler:
         code, *data = json.loads('[' + response.decode() + ']')
         return code, data
 
-    def process(self, enc_request, address):
+    def process(self, enc_request, address, signature):
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
         log.info('received request from {}'.format(address))
@@ -91,10 +105,9 @@ class RequestHandler:
 
         is_o_request = code in self.o_codes
         if not is_o_request:
-            sign = flask_request.headers.get('Request-Signature', '')
-            if not sign:
+            if not signature:
                 # Если подпись не указана, игнорируем
-                log.error('no signature for an N-request')
+                log.error('no signature for an N/T-request')
                 return b''
 
             try:
@@ -105,7 +118,7 @@ class RequestHandler:
                 return b''
 
             try:
-                self.pr._verify_signature(enc_request, sign, pub_key)
+                self.pr._verify_signature(enc_request, signature, pub_key)
             except BadRequest:
                 # Если подпись неверная, игнорируем
                 log.error('incorrect signature')
@@ -118,6 +131,9 @@ class RequestHandler:
             # Выбор обработчика запроса, соответствующего его коду
             handler = self.handler_map[code]
             log.info('processing request with ' + handler.__name__ + '()')
+
+            if code in self.t_codes:
+                data.append(self.connections)
 
             # Запускаем обработчик и получаем ответ
             response = handler(*data)
@@ -167,7 +183,8 @@ class Connector(WebSocketHandler):
         self.handler.connections[self._address] = self
 
     def on_message(self, message):
-        self.handler.process(message, self._address)
+        sign = self.request.headers.get('Request-Signature', '')
+        self.handler.process(message, self._address, sign)
 
     def on_close(self):
         if self._address in self.handler.connections:

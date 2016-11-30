@@ -3,6 +3,8 @@ import json, re, os
 import rsa, rsa.pkcs1
 from urllib.parse import urlparse
 from datetime import datetime
+from hashlib import md5
+from random import randint
 
 sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
               b'\x00\x00\x00\x01\x00\x00\x00\x01\x08'
@@ -23,30 +25,25 @@ class ClientCodes():
     friends_group = 3
     get_message_history = 4
     send_message = 5
-    new_message_received = 6
-    change_profile_section = 7
-    add_to_blacklist = 8
-    delete_from_friends = 9
-    send_request = 10
-    delete_profile = 11
-    friends_group_update_succ = 12
-    new_add_request_received = 13
-    add_request_confirm_received = 14
-    logout = 15
-    create_dialog = 16
-    get_profile_info = 17
-    remove_from_blacklist = 18
-    take_request_back = 19
-    confirm_add_request = 20
-    add_to_favorites = 21
-    delete_dialog = 22
-    add_request_decline_received = 23
-    search_msg = 24
-    remove_from_favorites = 25
-    get_add_requests = 26
-    decline_add_request = 27
-    set_image = 28
-    get_dialogs = 29
+    change_profile_section = 6
+    add_to_blacklist = 7
+    delete_from_friends = 8
+    send_request = 9
+    delete_profile = 10
+    logout = 11
+    create_dialog = 12
+    get_profile_info = 13
+    remove_from_blacklist = 14
+    take_request_back = 15
+    confirm_add_request = 16
+    add_to_favorites = 17
+    delete_dialog = 18
+    search_msg = 19
+    remove_from_favorites = 20
+    get_add_requests = 21
+    decline_add_request = 22
+    set_image = 23
+    get_dialogs = 24
 
 
 class ServerCodes():
@@ -88,8 +85,6 @@ class ServerCodes():
 cc = ClientCodes
 sc = ServerCodes
 
-# Add notificators about events
-
 
 class Processor:
     # Парсинг ссылки на базу данных
@@ -113,6 +108,21 @@ class Processor:
 
     # Регулярное выражение для валидации имен пользователей
     nick_ptrn = re.compile('(?![ ]+)[\w ]{2,15}')
+
+    def _request_id(self):
+        """Генерирует случайный идентификатор запроса"""
+        return md5(str(randint(0, 10000000)).encode()).hexdigest().encode()
+
+    def _send_notification(self, user, code, conns):
+        """Отправляет пользователю user уведомление с кодом code
+        Если user не в сети, уведомления он не получает"""
+        ntf = str(code).encode() + b',' + self._request_id()
+        c = self.db.cursor()
+        c.execute('''SELECT ip FROM sessions
+                     WHERE name = %s''', (user,))
+        ip = c.fetchone()['name']
+        if ip in conns:
+            conns[ip].write_message(ntf, binary = True)
 
     def _get_public_key(self, ip):
         """Получает публичный ключ для сессии, открытой с IP-адреса ip
@@ -362,15 +372,20 @@ class Processor:
         c.close()
         return self._pack(sc.register_succ, request_id)
 
-    def login(self, request_id, ip, nick, pswd, pub_key):
+    def login(self, request_id, ip, nick, pswd, pub_key, conns):
         """Войти в систему с именем nick, хэшем pswd пароля
         и публичным ключом pub_key"""
         c = self.db.cursor()
-        c.execute('''SELECT name FROM users
+        c.execute('''SELECT name, friends FROM users
                      WHERE name = %s AND password = %s''', (nick, pswd))
-        if not c.fetchone():
+        row = c.fetchone()
+        if not row:
             # Если такой комбинации имени-пароля нет
             return self._pack(sc.login_error, request_id)
+
+        friends = row['friends']
+        for i in friends:
+            self._send_notification(i, sc.friends_group_update, conns)
 
         try:
             self._add_session(nick, pub_key, ip)
@@ -432,7 +447,7 @@ class Processor:
         c.close()
         return self._pack(sc.message_history, request_id, msgs[-count:])
 
-    def send_message(self, request_id, ip, msg, tm, dialog):
+    def send_message(self, request_id, ip, msg, tm, dialog, conns):
         """Отправить сообщение msg с временем tm в диалог под номером dialog
         Вызывает BadRequest, если отправитель находится в черном списке
         собеседника или длина сообщения превышает 1000 символов"""
@@ -453,6 +468,9 @@ class Processor:
             c.execute('''INSERT INTO d{}
                          VALUES (%s, %s, %s)'''.format(dialog),
                       (msg, tm, nick))
+
+        self._send_notification(user, sc.new_message, conns)
+
         c.close()
         return self._pack(sc.message_received, request_id)
 
@@ -485,7 +503,7 @@ class Processor:
         c.close()
         return self._pack(sc.change_profile_section_succ, request_id)
 
-    def add_to_blacklist(self, request_id, ip, user):
+    def add_to_blacklist(self, request_id, ip, user, conns):
         """Добавить пользователя user в черный список
         Вызывает BadRequest, если отправитель пытается добавить себя"""
         nick = self._get_nick(ip)
@@ -497,17 +515,23 @@ class Processor:
         self._add_to(nick, user, 'blacklist')
         self._remove_add_request(nick, user)
         self._remove_add_request(user, nick)
+
+        self._send_notification(user, sc.friends_group_update, conns)
+
         return self._pack(sc.add_to_blacklist_succ, request_id)
 
-    def delete_from_friends(self, request_id, ip, user):
+    def delete_from_friends(self, request_id, ip, user, conns):
         """Удалить пользователя user из друзей"""
         nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_from(nick, user, 'friends')
         self._remove_from(nick, user, 'favorites')
+
+        self._send_notification(user, sc.friends_group_update, conns)
+
         return self._pack(sc.delete_from_friends_succ, request_id)
 
-    def send_request(self, request_id, ip, user, msg):
+    def send_request(self, request_id, ip, user, msg, conns):
         """Отправить пользователю user запрос на добавление с сообщением msg
         Вызывает BadRequest, если уже отправлен запрос этому пользователю
         или отправитель пытается отправить запрос на добавление себе
@@ -537,10 +561,12 @@ class Processor:
             c.execute('''INSERT INTO requests
                          VALUES (%s, %s, %s)''', (nick, user, msg))
 
+        self._send_notification(user, sc.friends_group_update, conns)
+
         c.close()
         return self._pack(sc.send_request_succ, request_id)
 
-    def delete_profile(self, request_id, ip):
+    def delete_profile(self, request_id, ip, conns):
         """Удалить свой профиль"""
         nick = self._get_nick(ip)
         nick_tuple = (nick,)
@@ -566,17 +592,21 @@ class Processor:
         c.execute('''DELETE FROM users
                      WHERE name = %s''', nick_tuple)
 
-        c.execute('''SELECT name FROM users''')
-        for i in c.fetchall():
+        for i in c.execute('''SELECT name FROM users'''):
             self._remove_from(i['name'], nick, 'blacklist')
+            self._send_notification(i['name'], sc.friends_group_update, conns)
 
         self.db.commit()
         c.close()
         return self._pack(sc.delete_profile_succ, request_id)
 
-    def logout(self, request_id, ip):
+    def logout(self, request_id, ip, conns):
         """Выйти из системы"""
         self._close_session(ip)
+        c = self.db.cursor()
+        for i in c.execute('''SELECT name FROM users'''):
+            self._send_notification(i['name'], sc.friends_group_update, conns)
+
         return self._pack(sc.logout_succ, request_id)
 
     def create_dialog(self, request_id, ip, user):
@@ -633,21 +663,25 @@ class Processor:
         return (self._pack(sc.profile_info, request_id, *info) +
                 b',' + bytes(img_data))
 
-    def remove_from_blacklist(self, request_id, ip, user):
+    def remove_from_blacklist(self, request_id, ip, user, conns):
         """Удалить пользователя user из черного списка отправителя"""
         nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_from(nick, user, 'blacklist')
+
+        self._send_notification(user, sc.friends_group_update, conns)
         return self._pack(sc.remove_from_blacklist_succ, request_id)
 
-    def take_request_back(self, request_id, ip, user):
+    def take_request_back(self, request_id, ip, user, conns):
         """Отменить запрос от отправителя к пользователю user"""
         nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_add_request(nick, user)
+
+        self._send_notification(user, sc.friends_group_update, conns)
         return self._pack(sc.take_request_back_succ, request_id)
 
-    def confirm_add_request(self, request_id, ip, user):
+    def confirm_add_request(self, request_id, ip, user, conns):
         """Принять запрос на добавление от пользователя user отправителем
         Вызывает BadRequest, если пользователь user
         находится в черном списке отправителя"""
@@ -658,6 +692,8 @@ class Processor:
         self._remove_add_request(user, nick)
         self._add_to(user, nick, 'friends')
         self._add_to(nick, user, 'friends')
+
+        self._send_notification(user, sc.friends_group_update, conns)
         return self._pack(sc.confirm_add_request_succ, request_id)
 
     def add_to_favorites(self, request_id, ip, user):
@@ -725,11 +761,13 @@ class Processor:
         c.close()
         return self._pack(sc.add_requests, request_id, list(result))
 
-    def decline_add_request(self, request_id, ip, user):
+    def decline_add_request(self, request_id, ip, user, conns):
         """Отменить запрос на добавление от пользователя user к отправителю"""
         nick = self._get_nick(ip)
         self._user_exists(user)
         self._remove_add_request(user, nick)
+
+        self._send_notification(user, sc.friends_group_update, conns)
         return self._pack(sc.decline_add_request_succ, request_id)
 
     def set_image(self, request_id, ip, img_data):
