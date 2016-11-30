@@ -1,8 +1,9 @@
 import json, logging, os
 from processors import Processor, cc, sc, BadRequest
-from flask import Flask, request as flask_request
 
-app = Flask(__name__)
+from tornado.ioloop import IOLoop
+from tornado.web import Application, RequestHandler as HTTPRequestHandler
+from tornado.websocket import WebSocketHandler
 
 
 class RequestHandler:
@@ -36,6 +37,7 @@ class RequestHandler:
     profile_info_code = str(sc.profile_info).encode()
 
     o_codes = {cc.register, cc.login}
+    connections = {}
 
     def unpack_req(self, request):
         """Распаковывает запрос request"""
@@ -65,20 +67,9 @@ class RequestHandler:
         code, *data = json.loads('[' + response.decode() + ']')
         return code, data
 
-    @app.route('/', methods = ['GET', 'POST'])
-    def process(self):
+    def process(self, enc_request, address):
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
-
-        # Получение запроса
-        enc_request = flask_request.data
-        try:
-            address = flask_request.headers.getlist("X-Forwarded-For")[-1]
-        except IndexError:
-            # Если заголовок X-Forwarded-For пуст, игнорируем
-            log.error('failed to get real IP address')
-            return b''
-
         log.info('received request from {}'.format(address))
 
         try:
@@ -158,13 +149,37 @@ class RequestHandler:
         log.info('sending reponse')
         return enc_response
 
-    @app.route('/key', methods=['GET'])
     def get_key(self):
         return self.pr.pub_key_str
 
-    def run(self):
-        app.run(debug=True, host=os.getenv('IP', '0.0.0.0'),
-                port=int(os.getenv('PORT', 8080)))
+
+class Connector(WebSocketHandler):
+    def initialize(self, handler):
+        self.handler = handler
+
+    def open(self):
+        self._address = self.request.headers['X-Forwarded-For']
+
+        if self._address in self.handler.connections:
+            self.write_message('Connection refused')
+            self.close()
+
+        self.handler.connections[self._address] = self
+
+    def on_message(self, message):
+        self.handler.process(message, self._address)
+
+    def on_close(self):
+        if self._address in self.handler.connections:
+            self.handler.connections.pop(self._address)
+
+
+class KeyHandler(HTTPRequestHandler):
+    def initialize(self, handler):
+        self.handler = handler
+
+    def get(self):
+        self.write(self.handler.get_key())
 
 
 if __name__ == "__main__":
@@ -184,7 +199,13 @@ if __name__ == "__main__":
 
     log.info('starting up')
     try:
-        RequestHandler().run()
+        handler = RequestHandler()
+        app = Application([(r'/', Connector, dict(handler = handler)),
+                           (r'/key', KeyHandler, dict(handler = handler))])
+
+        app.listen(os.getenv('PORT', 8080))
+
+        IOLoop.current().start()
     except KeyboardInterrupt:
         log.info('manual exit')
     except Exception as e:
