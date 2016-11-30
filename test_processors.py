@@ -6,6 +6,7 @@ Installer().install()
 from processors import *
 from request_handler import RequestHandler
 
+
 class TestProcessor(unittest.TestCase):
     rh = RequestHandler()
     unpack = rh.unpack_resp
@@ -424,7 +425,7 @@ class TestProcessor(unittest.TestCase):
                                   self.ip,
                                   self.nick,
                                   self.pswd,
-                                  ':'.join(self.key_strings)))
+                                  ':'.join(self.key_strings), {}))
         exp1 = (sc.login_succ,
                 [self.request_id])
         self.assertEqual(resp1, exp1)
@@ -433,7 +434,7 @@ class TestProcessor(unittest.TestCase):
                                   self.ip,
                                   self.nick,
                                   self.pswd,
-                                  ':'.join(self.key_strings)))
+                                  ':'.join(self.key_strings), {}))
         exp2 = (sc.login_error,
                 [self.request_id])
         self.assertEqual(resp2, exp2)
@@ -445,7 +446,7 @@ class TestProcessor(unittest.TestCase):
                                   self.ip,
                                   self.nick,
                                   self.pswd,
-                                  ':'.join(self.key_strings)))
+                                  ':'.join(self.key_strings), {}))
         self.assertEqual(resp3, exp2)
 
         self.pr._close_session(self.ip)
@@ -624,7 +625,7 @@ class TestProcessor(unittest.TestCase):
         msg_args = ['test', int(time.time() * 100), 0]
         resp1 = self.unpack(send_message(self.request_id,
                                          self.ip,
-                                         *msg_args))
+                                         *msg_args, {}))
         exp1 = (sc.message_received,
                 [self.request_id])
         self.assertTupleEqual(resp1, exp1)
@@ -640,14 +641,14 @@ class TestProcessor(unittest.TestCase):
                          self.ip,
                          '0' * 1001,
                          0,
-                         self.nick)
+                         self.nick, {})
 
         c.execute('''INSERT INTO "d0"
                      VALUES ('0', 0, %s)''', (other_user,))
         with self.assertRaises(BadRequest):
             send_message(self.request_id,
                          self.ip,
-                         *msg_args)
+                         *msg_args, {})
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
@@ -734,19 +735,19 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(add_to_blacklist(self.request_id,
                                             self.ip,
-                                            user1))
+                                            user1, {}))
         exp = (sc.add_to_blacklist_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
 
         add_to_blacklist(self.request_id,
                          self.ip,
-                         user2)
+                         user2, {})
 
         with self.assertRaises(BadRequest):
             add_to_blacklist(self.request_id,
                              self.ip,
-                             self.nick)
+                             self.nick, {})
 
         c.execute('''SELECT friends::text[],
                             favorites::text[],
@@ -789,8 +790,8 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[])''', (user1,))
 
         resp = self.unpack(delete_from_friends(self.request_id,
-                                           self.ip,
-                                           user1))
+                                               self.ip,
+                                               user1, {}))
         exp = (sc.delete_from_friends_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -831,7 +832,7 @@ class TestProcessor(unittest.TestCase):
         resp = self.unpack(send_request(self.request_id,
                                         self.ip,
                                         user1,
-                                        ''))
+                                        '', {}))
         exp = (sc.send_request_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -845,7 +846,7 @@ class TestProcessor(unittest.TestCase):
             send_request(self.request_id,
                          self.ip,
                          user1,
-                         '')
+                         '', {})
 
         c.execute('''DELETE FROM requests
                      WHERE from_who = %s AND to_who = %s''',
@@ -856,7 +857,7 @@ class TestProcessor(unittest.TestCase):
             send_request(self.request_id,
                          self.ip,
                          user1,
-                         '')
+                         '', {})
 
         self.pr._remove_from(user1, self.nick, 'friends')
         self.pr._add_to(user1, self.nick, 'friends')
@@ -864,7 +865,7 @@ class TestProcessor(unittest.TestCase):
             send_request(self.request_id,
                          self.ip,
                          user1,
-                         '')
+                         '', {})
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
@@ -914,7 +915,7 @@ class TestProcessor(unittest.TestCase):
                      VALUES (%s, %s, '')''', (self.nick, user4))
 
         resp = self.unpack(delete_profile(self.request_id,
-                                          self.ip))
+                                          self.ip, {}))
         exp = (sc.delete_profile_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -966,7 +967,7 @@ class TestProcessor(unittest.TestCase):
         self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
 
         resp = self.unpack(logout(self.request_id,
-                                  self.ip))
+                                  self.ip, {}))
         exp = (sc.logout_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -1129,7 +1130,7 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(remove_from_blacklist(self.request_id,
                                                  self.ip,
-                                                 user1))
+                                                 user1, {}))
         exp = (sc.remove_from_blacklist_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -1166,7 +1167,7 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(take_request_back(self.request_id,
                                              self.ip,
-                                             user1))
+                                             user1, {}))
         exp = (sc.take_request_back_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -1212,7 +1213,7 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(confirm_add_request(self.request_id,
                                                self.ip,
-                                               user1))
+                                               user1, {}))
         exp = (sc.confirm_add_request_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -1235,7 +1236,7 @@ class TestProcessor(unittest.TestCase):
         with self.assertRaises(BadRequest):
             confirm_add_request(self.request_id,
                                 self.ip,
-                                user2)
+                                user2, {})
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
@@ -1490,7 +1491,7 @@ class TestProcessor(unittest.TestCase):
 
         resp = self.unpack(decline_add_request(self.request_id,
                                                self.ip,
-                                               user1))
+                                               user1, {}))
         exp = (sc.decline_add_request_succ,
                [self.request_id])
         self.assertTupleEqual(resp, exp)
@@ -1584,6 +1585,6 @@ class TestProcessor(unittest.TestCase):
         self.pr.db.commit()
         c.close()
 
+
 if __name__ == '__main__':
     unittest.main()
-

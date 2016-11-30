@@ -120,7 +120,10 @@ class Processor:
         c = self.db.cursor()
         c.execute('''SELECT ip FROM sessions
                      WHERE name = %s''', (user,))
-        ip = c.fetchone()['name']
+        row = c.fetchone()
+        if not row:
+            return
+        ip = row['ip']
         if ip in conns:
             conns[ip].write_message(ntf, binary = True)
 
@@ -592,7 +595,8 @@ class Processor:
         c.execute('''DELETE FROM users
                      WHERE name = %s''', nick_tuple)
 
-        for i in c.execute('''SELECT name FROM users'''):
+        c.execute('''SELECT name FROM users''')
+        for i in c.fetchall():
             self._remove_from(i['name'], nick, 'blacklist')
             self._send_notification(i['name'], sc.friends_group_update, conns)
 
@@ -604,7 +608,8 @@ class Processor:
         """Выйти из системы"""
         self._close_session(ip)
         c = self.db.cursor()
-        for i in c.execute('''SELECT name FROM users'''):
+        c.execute('''SELECT name FROM users''')
+        for i in c.fetchall():
             self._send_notification(i['name'], sc.friends_group_update, conns)
 
         return self._pack(sc.logout_succ, request_id)

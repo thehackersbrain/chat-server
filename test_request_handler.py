@@ -1,9 +1,7 @@
 import unittest
 from request_handler import RequestHandler
-from json_pack import ClientCodes, ServerCodes
+from processors import cc, sc
 
-cc = ClientCodes
-sc = ServerCodes
 
 class RHTest(unittest.TestCase):
     rh = RequestHandler()
@@ -29,6 +27,7 @@ class RHTest(unittest.TestCase):
         act2 = self.rh.unpack_resp(resp2)
         exp2 = (0, ['1', ['2', '3', '4', []]])
         self.assertTupleEqual(act2, exp2)
+
 
 if __name__ == '__main__':
     unittest.main()
