@@ -1,0 +1,7 @@
+{
+  "name": "Chat-Server",
+  "description": " Server side of the encrypted chat ",
+  "repository": "https://github.com/MoarCatz/chat-server",
+  "logo": "https://avatars3.githubusercontent.com/u/21263910",
+  "keywords": ["python", "socket", "chat"]
+}
