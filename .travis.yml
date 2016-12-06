@@ -19,6 +19,7 @@ script:
   - psql -c "CREATE DATABASE chat WITH ENCODING 'utf8';" -U postgres
   - coverage run test_processors.py
   - coverage run test_request_handler.py
+  - coverage combine
 
 after_success:
   - codecov
