@@ -412,9 +412,16 @@ class Processor:
     def search_username(self, request_id, ip, user):
         """Найти среди пользователей тех, чье имя содержит подстроку user"""
         c = self.db.cursor()
+        c.execute('''SELECT name FROM sessions''')
+        online = set(row['name'] for row in c.fetchall())
+
         c.execute('''SELECT name FROM users
                      WHERE POSITION(%s IN name) > 0''', (user,))
-        search_results = [row['name'] for row in c.fetchall()]
+        search_results = []
+        for row in c.fetchall():
+            name = row['name']
+            search_results.append((name, name in online))
+
         c.close()
         return self._pack(sc.search_username_result, request_id,
                           search_results)
