@@ -1,10 +1,11 @@
 import psycopg2, psycopg2.extras
 import json, re, os
-import rsa, rsa.pkcs1
+import rsa, rsa.pkcs1, pyaes
 from urllib.parse import urlparse
 from datetime import datetime
 from hashlib import md5
 from random import randint
+from base64 import b64encode, b64decode
 
 sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
               b'\x00\x00\x00\x01\x00\x00\x00\x01\x08'
@@ -140,20 +141,30 @@ class Processor:
         pub_key = rsa.PublicKey(int(n), int(e))
         return pub_key
 
-    def _decrypt(self, request):
-        """Расшифровывает байт-строку request приватным ключом сервера
+    def _decrypt(self, request, enc_key):
+        """Расшифровывает байт-строку request через ключ enc_key
         Вызывает BadRequest, если расшифровать строку не удалось"""
         try:
-            decrypted = rsa.decrypt(request, self.priv_key)
+            key = rsa.decrypt(enc_key, self.priv_key)
         except rsa.pkcs1.DecryptionError:
             raise BadRequest
+
+        aes = pyaes.AESModeOfOperationCTR(key)
+        decrypted = aes.decrypt(request)
+
         return decrypted
 
     def _encrypt(self, response, pub_key):
-        """Зашифровывает байт-строку response
-        публичным ключом клиента pub_key"""
+        """Зашифровывает байт-строку response AES-шифрованием, а ключ
+        шифрует публичным ключом клиента pub_key"""
         enc_response = rsa.encrypt(response, pub_key)
-        return enc_response
+
+        key = os.urandom(32)
+        aes = pyaes.AESModeOfOperationCTR(key)
+        enc_response = aes.encrypt(response)
+        enc_key = rsa.encrypt(key, pub_key)
+
+        return b64encode(enc_response) + b':' + b64encode(enc_key)
 
     def _verify_signature(self, request, signature, pub_key):
         """Проверяет подлинность подписи signature байт-строки request

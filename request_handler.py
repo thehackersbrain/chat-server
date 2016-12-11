@@ -81,13 +81,13 @@ class RequestHandler:
         code, *data = json.loads('[' + response.decode() + ']')
         return code, data
 
-    def process(self, enc_request, address, signature):
+    def process(self, enc_request, address, signature, enc_key):
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
         log.info('received request from {}'.format(address))
 
         try:
-            request = self.pr._decrypt(enc_request)
+            request = self.pr._decrypt(enc_request, enc_key)
             log.info('decrypted request successfully')
         except BadRequest:
             # Если расшифровать запрос не удалось, игнорируем
@@ -183,8 +183,13 @@ class Connector(WebSocketHandler):
         self.handler.connections[self._address] = self
 
     def on_message(self, message):
-        sign = self.request.headers.get('Request-Signature', '')
-        self.handler.process(message, self._address, sign)
+        enc_request, sign, enc_key = message.decode().split(':')
+        resp = self.handler.process(enc_request, self._address, sign, enc_key)
+
+        client_key = self.handler._get_public_key(self._address)
+        enc_resp = self.handler._encrypt(resp, client_key)
+        self.write_message(enc_resp, binary = True)
+
 
     def on_close(self):
         if self._address in self.handler.connections:
