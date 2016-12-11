@@ -7,7 +7,7 @@ services:
   - postgresql
 
 install:
-  - pip install codecov coverage psycopg2 rsa Tornado
+  - pip install codecov coverage pyaes psycopg2 rsa Tornado
 
 before_script:
   - psql -c "CREATE DATABASE chat WITH ENCODING 'utf8';" -U postgres

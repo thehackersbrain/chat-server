@@ -1,3 +1,4 @@
 psycopg2==2.6.2
 rsa==3.4.2
 Tornado==4.4.2
+pyaes==1.6.0

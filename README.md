@@ -1,9 +1,9 @@
 <img src="https://avatars3.githubusercontent.com/u/21263910?v=3&s=100" alt="MoarCatz logo"
      title="MoarCatz" align="right" />
-     
+
 [![Build Status](https://travis-ci.org/MoarCatz/chat-server.svg?branch=master)](https://travis-ci.org/MoarCatz/chat-server)
 [![codecov](https://codecov.io/gh/MoarCatz/chat-server/branch/master/graph/badge.svg)](https://codecov.io/gh/MoarCatz/chat-server)
-     
+
 # Chat-Server
 Backend for encrypted chat service.
 
@@ -12,7 +12,8 @@ Backend for encrypted chat service.
 Here is a list of Python dependencies we're using right now:
 
 * [Tornado](https://github.com/tornadoweb/tornado)
-* [rsa](https://pypi.python.org/pypi/rsa)
+* [rsa](https://github.com/sybrenstuvel/python-rsa)
+* [pyaes](https://github.com/ricmoo/pyaes)
 * [psycopg2](https://github.com/psycopg/psycopg2)
 
 =============
