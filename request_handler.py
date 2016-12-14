@@ -1,4 +1,7 @@
 import json, logging, os
+from installer import Installer
+Installer().install()
+
 from processors import Processor, cc, sc, BadRequest
 
 from tornado.ioloop import IOLoop
@@ -33,7 +36,6 @@ class RequestHandler:
         cc.get_add_requests:          pr.add_requests,
         cc.decline_add_request:       pr.decline_add_request,
         cc.set_image:                 pr.set_image,
-        cc.get_dialogs:               pr.get_dialogs
     }
     set_image_code = str(cc.set_image).encode()
     profile_info_code = str(sc.profile_info).encode()

@@ -7,12 +7,6 @@ from hashlib import md5
 from random import randint
 from base64 import b64encode, b64decode
 
-sample_img = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
-              b'\x00\x00\x00\x01\x00\x00\x00\x01\x08'
-              b'\x02\x00\x00\x00\x90wS\xde\x00\x00\x00'
-              b'\x0cIDATx\x9cc```\x00\x00\x00\x04\x00'
-              b'\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82')
-
 
 class BadRequest(Exception):
     """Класс исключений для индикации логической ошибки в запросе"""
@@ -44,7 +38,6 @@ class ClientCodes():
     get_add_requests = 21
     decline_add_request = 22
     set_image = 23
-    get_dialogs = 24
 
 
 class ServerCodes():
@@ -80,7 +73,6 @@ class ServerCodes():
     add_requests = 28
     decline_add_request_succ = 29
     set_image_succ = 30
-    get_dialogs_resp = 31
 
 
 cc = ClientCodes
@@ -635,14 +627,15 @@ class Processor:
     def create_dialog(self, request_id, ip, user):
         """Создать диалог с пользователем user
         Вызывает BadRequest, если пользователь user
-        не находится в друзьях отправителя"""
+        не находится в друзьях или черном списке отправителя"""
         nick = self._get_nick(ip)
         self._user_exists(user)
 
         c = self.db.cursor()
         c.execute('''SELECT name FROM users
-                     WHERE name = %s AND %s = ANY(friends::text[])''',
-                  (user, nick))
+                     WHERE name = %s AND (%s = ANY(friends::text[])
+                     OR %s = ANY(blacklist::text[]))''',
+                  (nick, user, user))
         if not c.fetchone():
             raise BadRequest
 
@@ -651,9 +644,12 @@ class Processor:
         dlg1 = set(c.fetchone()['dialogs'])
         dlg2 = set(c.fetchone()['dialogs'])
 
-        if dlg1.intersection(dlg2):
+        common_dialog = dlg1.intersection(dlg2)
+
+        if common_dialog:
             # Если у отправителя и пользователя user есть общий диалог
-            return self._pack(sc.create_dialog_succ, request_id)
+            return self._pack(sc.create_dialog_succ, request_id,
+                              common_dialog.pop())
 
         d_st = str(self._next_free_dialog())
         with self.db:
@@ -665,7 +661,7 @@ class Processor:
         self._add_to(user, d_st, 'dialogs')
 
         c.close()
-        return self._pack(sc.create_dialog_succ, request_id)
+        return self._pack(sc.create_dialog_succ, request_id, int(d_st))
 
     def profile_info(self, request_id, ip, user):
         """Получить информацию о пользователе user
@@ -775,14 +771,20 @@ class Processor:
         return self._pack(sc.remove_from_favorites_succ, request_id)
 
     def add_requests(self, request_id, ip):
-        """Получить запросы на добавление к отправителю"""
+        """Получить запросы на добавление к отправителю и от него"""
         nick = self._get_nick(ip)
         c = self.db.cursor()
+        c.execute('''SELECT name FROM sessions''')
+        online = {i['name'] for i in c.fetchall()}
+
         c.execute('''SELECT from_who, message FROM requests
                      WHERE to_who = %s''', (nick,))
-        result = map(tuple, c.fetchall())
+        inc = [(*i, i[0] in online) for i in map(tuple, c.fetchall())]
+        c.execute('''SELECT to_who, message FROM requests
+                     WHERE from_who = %s''', (nick,))
+        outc = [(*i, i[0] in online) for i in map(tuple, c.fetchall())]
         c.close()
-        return self._pack(sc.add_requests, request_id, list(result))
+        return self._pack(sc.add_requests, request_id, [inc, outc])
 
     def decline_add_request(self, request_id, ip, user, conns):
         """Отменить запрос на добавление от пользователя user к отправителю"""
@@ -804,21 +806,3 @@ class Processor:
                       (img_data, nick))
         c.close()
         return self._pack(sc.set_image_succ, request_id)
-
-    def get_dialogs(self, request_id, ip):
-        """Получить список диалогов"""
-        nick = self._get_nick(ip)
-        dialogs = []
-
-        c = self.db.cursor()
-        c.execute('''SELECT dialogs::text[] FROM users
-                     WHERE name = %s''', (nick,))
-
-        for dlg in c.fetchone()['dialogs']:
-            c.execute('''SELECT sender FROM "d{}"
-                         WHERE sender != %s'''.format(dlg), (nick,))
-            user = c.fetchone()['sender']
-            dialogs.append((dlg, user))
-
-        c.close()
-        return self._pack(sc.get_dialogs_resp, request_id, dialogs)

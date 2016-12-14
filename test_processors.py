@@ -1544,47 +1544,6 @@ class TestProcessor(unittest.TestCase):
         self.pr.db.commit()
         c.close()
 
-    def test_get_dialogs(self):
-        get_dialogs = self.pr.get_dialogs
-        c = self.pr.db.cursor()
-        user1 = '@other_user'
-        user2 = '@first_user'
-
-        c.execute('''INSERT INTO users
-                     VALUES (%s, '', ARRAY[]::text[],
-                                     ARRAY[]::text[],
-                                     ARRAY[]::text[],
-                                     ARRAY['0', '1'])''', (self.nick,))
-        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
-
-        c.execute('''CREATE TABLE "d0" (content text,
-                                        timestamp bigint,
-                                        sender text)''')
-        c.execute('''CREATE TABLE "d1" (content text,
-                                        timestamp bigint,
-                                        sender text)''')
-        c.execute('''INSERT INTO "d0"
-                     VALUES ('test', 0, %s)''', (user1,))
-        c.execute('''INSERT INTO "d1"
-                     VALUES ('test', 0, %s)''', (user2,))
-
-        resp = self.unpack(get_dialogs(self.request_id,
-                                       self.ip))
-        exp = (sc.get_dialogs_resp,
-               [self.request_id,
-                [['0', user1],
-                 ['1', user2]]])
-        self.assertTupleEqual(resp, exp)
-
-        c.execute('''DROP TABLE "d0"''')
-        c.execute('''DROP TABLE "d1"''')
-        c.execute('''DELETE FROM users
-                     WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.ip)
-
-        self.pr.db.commit()
-        c.close()
-
 
 if __name__ == '__main__':
     unittest.main()
