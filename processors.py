@@ -1,11 +1,12 @@
 import psycopg2, psycopg2.extras
-import json, re, os
+import json, re, os, binascii
 import rsa, rsa.pkcs1, pyaes
 from urllib.parse import urlparse
 from datetime import datetime
 from hashlib import md5
 from random import randint
 from base64 import b64encode, b64decode
+from itertools import chain
 
 
 class BadRequest(Exception):
@@ -16,7 +17,7 @@ class ClientCodes():
     """Перечисление кодов запросов от клиента"""
     register = 0
     login = 1
-    search_username = 2
+    get_search_list = 2
     friends_group = 3
     get_message_history = 4
     send_message = 5
@@ -32,12 +33,11 @@ class ClientCodes():
     take_request_back = 15
     confirm_add_request = 16
     add_to_favorites = 17
-    delete_dialog = 18
-    search_msg = 19
-    remove_from_favorites = 20
-    get_add_requests = 21
-    decline_add_request = 22
-    set_image = 23
+    search_msg = 18
+    remove_from_favorites = 19
+    get_add_requests = 20
+    decline_add_request = 21
+    set_image = 22
 
 
 class ServerCodes():
@@ -46,7 +46,7 @@ class ServerCodes():
     register_error = 1
     login_succ = 2
     register_succ = 3
-    search_username_result = 4
+    search_list = 4
     friends_group_response = 5
     message_history = 6
     message_received = 7
@@ -66,13 +66,12 @@ class ServerCodes():
     take_request_back_succ = 21
     confirm_add_request_succ = 22
     add_to_favorites_succ = 23
-    delete_dialog_succ = 24
-    add_request_decline = 25
-    search_msg_result = 26
-    remove_from_favorites_succ = 27
-    add_requests = 28
-    decline_add_request_succ = 29
-    set_image_succ = 30
+    add_request_decline = 24
+    search_msg_result = 25
+    remove_from_favorites_succ = 26
+    add_requests = 27
+    decline_add_request_succ = 28
+    set_image_succ = 29
 
 
 cc = ClientCodes
@@ -109,7 +108,7 @@ class Processor:
     def _send_notification(self, user, code, conns):
         """Отправляет пользователю user уведомление с кодом code
         Если user не в сети, уведомления он не получает"""
-        ntf = str(code).encode() + b',' + self._request_id()
+        ntf = str(code).encode()
         c = self.db.cursor()
         c.execute('''SELECT ip FROM sessions
                      WHERE name = %s''', (user,))
@@ -134,23 +133,23 @@ class Processor:
         return pub_key
 
     def _decrypt(self, request, enc_key):
-        """Расшифровывает байт-строку request через ключ enc_key
+        """Расшифровывает байт-строку request в base64 через ключ enc_key
         Вызывает BadRequest, если расшифровать строку не удалось"""
         try:
-            key = rsa.decrypt(enc_key, self.priv_key)
-        except rsa.pkcs1.DecryptionError:
+            decoded_request = b64decode(request)
+            decoded_key = b64decode(enc_key)
+            key = rsa.decrypt(decoded_key, self.priv_key)
+        except (rsa.pkcs1.DecryptionError, binascii.Error):
             raise BadRequest
 
         aes = pyaes.AESModeOfOperationCTR(key)
-        decrypted = aes.decrypt(request)
+        decrypted = aes.decrypt(decoded_request)
 
         return decrypted
 
     def _encrypt(self, response, pub_key):
         """Зашифровывает байт-строку response AES-шифрованием, а ключ
         шифрует публичным ключом клиента pub_key"""
-        enc_response = rsa.encrypt(response, pub_key)
-
         key = os.urandom(32)
         aes = pyaes.AESModeOfOperationCTR(key)
         enc_response = aes.encrypt(response)
@@ -159,11 +158,12 @@ class Processor:
         return b64encode(enc_response) + b':' + b64encode(enc_key)
 
     def _verify_signature(self, request, signature, pub_key):
-        """Проверяет подлинность подписи signature байт-строки request
+        """Проверяет подлинность подписи signature байт-строки request в base64
         публичным ключом pub_key
         Вызывает BadRequest, если проверка не пройдена"""
+        decoded_request = b64decode(request)
         try:
-            rsa.verify(request, signature, pub_key)
+            rsa.verify(decoded_request, signature, pub_key)
         except rsa.pkcs1.VerificationError:
             raise BadRequest
 
@@ -273,6 +273,19 @@ class Processor:
 
         c.close()
 
+    def _get_collocutor(self, dialog, nick):
+        """Возвращает собеседника nick в диалоге dialog
+        Вызывает BadRequest, если собеседника нет"""
+        c = self.db.cursor()
+
+        c.execute('''SELECT name FROM users
+                     WHERE name != %s AND %s = ANY(dialogs::text[])''',
+                  (nick, str(dialog)))
+        row = c.fetchone()
+        if not row:
+            return None
+        return row['name']
+
     def _user_in_dialog(self, user, dialog):
         """Проверяет, что диалог под номером dialog есть
         в графе диалогов пользователя user
@@ -332,11 +345,16 @@ class Processor:
                      WHERE table_schema = 'public' ''')
         dialogs = sorted(int(i['table_name'][1:]) for i in c.fetchall()
                          if i['table_name'][0] == 'd')
+        # Здесь из всех таблиц, названия которых начинаются с 'd', будет взят
+        # номер, и полученный список номеров будет отсортирован
+        c.close()
+        if not dialogs:
+            # Если еще нет диалогов
+            return 1
+
         for i in range(1, len(dialogs)):
             if dialogs[i] - dialogs[i - 1] != 1:
-                c.close()
                 return dialogs[i - 1] + 1
-        c.close()
         return dialogs[-1] + 1
 
     def _set_timestamp(self, address):
@@ -349,9 +367,21 @@ class Processor:
 
         c.close()
 
+    def _clean_up(self, address):
+        """Закрывает все сессии с address на случай аварийного закрытия
+        соединения клиентом"""
+        c = self.db.cursor()
+        c.execute('''DELETE FROM sessions
+                     WHERE ip = %s''', (address,))
+        c.close()
+        self.db.commit()
+
     def register(self, request_id, ip, nick, pswd, pub_key):
         """Зарегистрироваться с именем nick, хэшем pswd пароля
         и публичным ключом pub_key"""
+        with open('avatar_placeholder.png', 'rb') as f:
+            img = f.read()
+
         if not self._valid_nick(nick):
             return self._pack(sc.register_error, request_id)
 
@@ -368,7 +398,7 @@ class Processor:
                           (nick, pswd))
 
                 c.execute('''INSERT INTO profiles
-                             VALUES (%s, '', '', 0, '', E'')''', (nick,))
+                             VALUES (%s, '', '', 0, '', %s)''', (nick, img))
         except psycopg2.IntegrityError:
             # Если пользователь с таким именем существует
             return self._pack(sc.register_error, request_id)
@@ -387,40 +417,65 @@ class Processor:
         row = c.fetchone()
         if not row:
             # Если такой комбинации имени-пароля нет
-            return self._pack(sc.login_error, request_id)
+            return (self._pack(sc.login_error, request_id),
+                    rsa.PublicKey(*list(map(int, pub_key.split(':')))))
 
         friends = row['friends']
-        for i in friends:
+
+        c.execute('''SELECT name FROM users
+                     WHERE %s = ANY(blacklist::text[])''', (nick,))
+        in_bl = [row['name'] for row in c.fetchall()]
+
+        c.execute('''SELECT to_who FROM requests
+                     WHERE from_who = %s''', (nick,))
+        outc = [row['to_who'] for row in c.fetchall()]
+
+        c.execute('''SELECT from_who FROM requests
+                     WHERE to_who = %s''', (nick,))
+        inc = [row['from_who'] for row in c.fetchall()]
+
+        for i in chain(friends, in_bl, outc, inc):
             self._send_notification(i, sc.friends_group_update, conns)
 
         try:
             self._add_session(nick, pub_key, ip)
         except BadRequest:
-            return self._pack(sc.login_error, request_id)
+            return (self._pack(sc.login_error, request_id),
+                    rsa.PublicKey(*list(map(int, pub_key.split(':')))))
 
         c.close()
         return self._pack(sc.login_succ, request_id)
 
-    def search_username(self, request_id, ip, user):
-        """Найти среди пользователей тех, чье имя содержит подстроку user"""
+    def search_list(self, request_id, ip):
+        """Получить список всех пользователей и их статусов для поиска"""
         c = self.db.cursor()
+        nick = self._get_nick(ip)
         c.execute('''SELECT name FROM sessions''')
         online = set(row['name'] for row in c.fetchall())
 
+        c.execute('''SELECT from_who FROM requests
+                     WHERE to_who = %s''', (nick,))
+        inc = set(row['from_who'] for row in c.fetchall())
+        c.execute('''SELECT to_who FROM requests
+                     WHERE from_who = %s''', (nick,))
+        outc = set(row['to_who'] for row in c.fetchall())
+
         c.execute('''SELECT name FROM users
-                     WHERE POSITION(%s IN name) > 0''', (user,))
-        search_results = []
+                     WHERE name != %s AND
+                     (%s != ANY(blacklist::text[]) OR blacklist = '{}') AND
+                     (%s != ANY(friends::text[]) OR friends = '{}')''', (nick, nick, nick))
+        user_list = []
         for row in c.fetchall():
             name = row['name']
-            search_results.append((name, name in online))
+            if name not in inc and name not in outc:
+                user_list.append((name, name in online))
 
         c.close()
-        return self._pack(sc.search_username_result, request_id,
-                          search_results)
+        return self._pack(sc.search_list, request_id, user_list)
 
     def friends_group(self, request_id, ip):
         """Получить список друзей, сгрупированных в списки:
-        онлайн, оффлайн, избранные, черный список"""
+        онлайн, оффлайн, избранные, заблокированные"""
         c = self.db.cursor()
         nick = self._get_nick(ip)
         c.execute('''SELECT friends::text[],
@@ -436,12 +491,15 @@ class Processor:
         offline = []
         for i in friends:
             if i in online_all:
-                online.append(i)
+                online.append((i, True))
             else:
-                offline.append(i)
+                offline.append((i, False))
+
+        fav = [(name, name in online_all) for name in fav]
+        bl = [(name, name in online_all) for name in bl]
         c.close()
         return self._pack(sc.friends_group_response, request_id,
-                          [online, offline, fav, bl])
+                          [fav, online, offline, bl])
 
     def message_history(self, request_id, ip, count, dialog):
         """Получить count последних сообщений из диалога dialog
@@ -464,25 +522,26 @@ class Processor:
         """Отправить сообщение msg с временем tm в диалог под номером dialog
         Вызывает BadRequest, если отправитель находится в черном списке
         собеседника или длина сообщения превышает 1000 символов"""
+        if not isinstance(dialog, int):
+            raise BadRequest
         max_msg_length = 1000
         if len(msg) > max_msg_length:
             raise BadRequest
         nick = self._get_nick(ip)
         self._user_in_dialog(nick, dialog)
 
-        c = self.db.cursor()
-        c.execute('''SELECT sender FROM d{}
-                     WHERE sender != %s'''.format(dialog), (nick,))
-        user = c.fetchone()
-        if user and self._is_blacklisted(nick, user['sender']):
+        user = self._get_collocutor(dialog, nick)
+        if user and self._is_blacklisted(nick, user):
             raise BadRequest
 
+        c = self.db.cursor()
         with self.db:
             c.execute('''INSERT INTO d{}
                          VALUES (%s, %s, %s)'''.format(dialog),
                       (msg, tm, nick))
 
-        self._send_notification(user, sc.new_message, conns)
+        if not user:
+            self._send_notification(user, sc.new_message, conns)
 
         c.close()
         return self._pack(sc.message_received, request_id)
@@ -539,6 +598,8 @@ class Processor:
         self._user_exists(user)
         self._remove_from(nick, user, 'friends')
         self._remove_from(nick, user, 'favorites')
+        self._remove_from(user, nick, 'friends')
+        self._remove_from(user, nick, 'favorites')
 
         self._send_notification(user, sc.friends_group_update, conns)
 
@@ -649,7 +710,7 @@ class Processor:
         if common_dialog:
             # Если у отправителя и пользователя user есть общий диалог
             return self._pack(sc.create_dialog_succ, request_id,
-                              common_dialog.pop())
+                              int(common_dialog.pop()))
 
         d_st = str(self._next_free_dialog())
         with self.db:
@@ -679,8 +740,8 @@ class Processor:
         *info, img_data = tuple(c.fetchone())
 
         c.close()
-        return (self._pack(sc.profile_info, request_id, *info) +
-                b',' + bytes(img_data))
+        return self._pack(sc.profile_info, request_id, *info,
+                          b64encode(bytes(img_data)).decode())
 
     def remove_from_blacklist(self, request_id, ip, user, conns):
         """Удалить пользователя user из черного списка отправителя"""
@@ -732,16 +793,6 @@ class Processor:
 
         c.close()
         return self._pack(sc.add_to_favorites_succ, request_id)
-
-    def delete_dialog(self, request_id, ip, dialog):
-        """Удалить диалог под номером dialog от лица отправителя
-        Вызывает BadRequest, если dialog не является целым числом"""
-        nick = self._get_nick(ip)
-        if not isinstance(dialog, int):
-            raise BadRequest
-        self._user_in_dialog(nick, dialog)
-        self._delete_dialog(dialog, nick)
-        return self._pack(sc.delete_dialog_succ, request_id)
 
     def search_msg(self, request_id, ip, dialog, text, lower_tm, upper_tm):
         """Найти в диалоге под номером dialog сообщение,
@@ -797,12 +848,12 @@ class Processor:
 
     def set_image(self, request_id, ip, img_data):
         """Установить в качестве изображения пользователя картинку,
-        бинарные данные которой находятся в img_data"""
+        бинарные данные в base64 которой находятся в img_data"""
         nick = self._get_nick(ip)
         c = self.db.cursor()
         with self.db:
             c.execute('''UPDATE profiles SET image = %s
                          WHERE name = %s''',
-                      (img_data, nick))
+                      (b64decode(img_data), nick))
         c.close()
         return self._pack(sc.set_image_succ, request_id)

@@ -1,6 +1,5 @@
 import json, logging, os
-from installer import Installer
-Installer().install()
+from base64 import b64decode
 
 from processors import Processor, cc, sc, BadRequest
 
@@ -14,7 +13,7 @@ class RequestHandler:
     handler_map = {
         cc.register:                  pr.register,
         cc.login:                     pr.login,
-        cc.search_username:           pr.search_username,
+        cc.get_search_list:           pr.search_list,
         cc.friends_group:             pr.friends_group,
         cc.get_message_history:       pr.message_history,
         cc.send_message:              pr.send_message,
@@ -30,7 +29,6 @@ class RequestHandler:
         cc.take_request_back:         pr.take_request_back,
         cc.confirm_add_request:       pr.confirm_add_request,
         cc.add_to_favorites:          pr.add_to_favorites,
-        cc.delete_dialog:             pr.delete_dialog,
         cc.search_msg:                pr.search_msg,
         cc.remove_from_favorites:     pr.remove_from_favorites,
         cc.get_add_requests:          pr.add_requests,
@@ -55,34 +53,6 @@ class RequestHandler:
 
     connections = {}
 
-    def unpack_req(self, request):
-        """Распаковывает запрос request"""
-        if request[:2] == self.set_image_code:
-            comma_idx = 0
-            for i in range(4):
-                comma_idx += request[comma_idx:].find(b',') + 1
-            body, img = request[:comma_idx - 1], request[comma_idx:]
-            code, *data = json.loads('[' + body.decode() + ']')
-            data.append(img)
-            return code, data
-
-        code, *data = json.loads('[' + request.decode() + ']')
-        return code, data
-
-    def unpack_resp(self, response):
-        """Распаковывает ответ response"""
-        if response[:2] == self.profile_info_code:
-            comma_idx = 0
-            for i in range(6):
-                comma_idx += response[comma_idx:].find(b',') + 1
-            body, img = response[:comma_idx - 1], response[comma_idx:]
-            code, *data = json.loads('[' + body.decode() + ']')
-            data.append(img)
-            return code, data
-
-        code, *data = json.loads('[' + response.decode() + ']')
-        return code, data
-
     def process(self, enc_request, address, signature, enc_key):
         """Главный цикл работы сервера,
         отвечающий за обработку запросов"""
@@ -98,7 +68,7 @@ class RequestHandler:
             return b''
 
         try:
-            code, data = self.unpack_req(request)
+            code, *data = json.loads('[' + request.decode() + ']')
         except ValueError:
             # Если распаковать запрос не удалось, игнорируем
             log.error('failed to decode request')
@@ -120,7 +90,8 @@ class RequestHandler:
                 return b''
 
             try:
-                self.pr._verify_signature(enc_request, signature, pub_key)
+                self.pr._verify_signature(enc_request, b64decode(signature),
+                                          pub_key)
             except BadRequest:
                 # Если подпись неверная, игнорируем
                 log.error('incorrect signature')
@@ -142,16 +113,19 @@ class RequestHandler:
         except (TypeError, IndexError, BadRequest):
             # Если в запросе логическая ошибка, игнорируем
             log.error('bad request from {}: {}'.format(address, request))
+            log.exception('This exception has caused the bad request')
             return b''
 
+        if isinstance(response, tuple):
+            response, pub_key = response
+        elif is_o_request:
+            pub_key = self.pr._get_public_key(address)
+
         # Следующий блок кода может быть небезопасен
-        r_code, r_data = self.unpack_resp(response)
+        r_code, *r_data = json.loads('[' + response.decode() + ']')
         log.info('response code: ' + str(r_code))
         log.info('response data: ' + str(r_data))
         log.debug('response: {}'.format(response))
-
-        if is_o_request:
-            pub_key = self.pr._get_public_key(address)
 
         try:
             enc_response = self.pr._encrypt(response, pub_key)
@@ -162,7 +136,7 @@ class RequestHandler:
 
         # Записываем текущую дату
         self.pr._set_timestamp(address)
-        log.info('set new timestamp for: ' + address)
+        log.info('set new timestamp for ' + address)
 
         log.info('sending reponse')
         return enc_response
@@ -185,15 +159,13 @@ class Connector(WebSocketHandler):
         self.handler.connections[self._address] = self
 
     def on_message(self, message):
-        enc_request, sign, enc_key = message.decode().split(':')
-        resp = self.handler.process(enc_request, self._address, sign, enc_key)
-
-        client_key = self.handler._get_public_key(self._address)
-        enc_resp = self.handler._encrypt(resp, client_key)
-        self.write_message(enc_resp, binary = True)
-
+        enc_request, sign, enc_key = message.split(':')
+        resp = self.handler.process(enc_request.encode(), self._address,
+                                    sign, enc_key)
+        self.write_message(resp, binary = True)
 
     def on_close(self):
+        self.handler.pr._clean_up(self._address)
         if self._address in self.handler.connections:
             self.handler.connections.pop(self._address)
 
