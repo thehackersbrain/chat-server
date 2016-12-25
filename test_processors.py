@@ -1,24 +1,62 @@
-import unittest, time, rsa
+import unittest, time, rsa, json, pyaes, os
 from hashlib import sha256
+from base64 import b64decode, b64encode
 from installer import Installer
-
-Installer().install()
+installer = Installer()
+installer.install()
 from processors import *
-from request_handler import RequestHandler
+
+
+class FakeConnection:
+    def write_message(self, msg, binary = False):
+        if not binary:
+            msg = msg.encode()
+        self.buffer += msg
+
+    def __init__(self):
+        self.buffer = b''
+
+    def flush(self):
+        self.buffer = b''
 
 
 class TestProcessor(unittest.TestCase):
-    rh = RequestHandler()
-    unpack = rh.unpack_resp
-
     pr = Processor()
 
     nick = 'test_user'
     ip = 'test_ip'
     pub_key, priv_key = rsa.newkeys(2048, accurate = False)
-    pswd = sha256(b'pswdmysalt').hexdigest()
+    pswd = sha256(b'pswd').hexdigest()
     request_id = '0'
     key_strings = list(map(str, pub_key.__getstate__()))
+
+    def unpack(self, st):
+        if isinstance(st, bytes):
+            st = st.decode()
+        code, *data = json.loads('[' + st + ']')
+        return code, data
+
+    def test__request_id(self):
+        r_id1 = self.pr._request_id()
+        r_id2 = self.pr._request_id()
+        self.assertIsInstance(r_id1, bytes)
+        self.assertNotEqual(r_id1, r_id2)
+
+    def test__send_notification(self):
+        send_ntf = self.pr._send_notification
+        nthr_ip = 'diff_ip'
+        conns = {self.ip: FakeConnection(),
+                 nthr_ip: FakeConnection()}
+        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
+        send_ntf(self.nick, 0, conns)
+        right = conns[self.ip]
+        wrong = conns[nthr_ip]
+        self.assertEqual(right.buffer, b'0')
+        self.assertEqual(wrong.buffer, b'')
+        self.pr._close_session(self.ip)
+        right.flush()
+        send_ntf(self.nick, 0, conns)
+        self.assertEqual(right.buffer, b'')
 
     def test__get_public_key(self):
         _get_public_key = self.pr._get_public_key
@@ -39,33 +77,47 @@ class TestProcessor(unittest.TestCase):
         server_pub = rsa.PublicKey(int(n), int(e))
 
         base = b'Hello, World'
-        enc = rsa.encrypt(base, server_pub)
-        self.assertEqual(_decrypt(enc), base)
+        key = os.urandom(32)
+        aes = pyaes.AESModeOfOperationCTR(key)
+        encrypted = b64encode(aes.encrypt(base))
+        enc_key = b64encode(rsa.encrypt(key, server_pub))
+
+        self.assertEqual(_decrypt(encrypted, enc_key), base)
 
         rand_bytes = b'not_encrypted'
+        rand_key = b'not a key'
         with self.assertRaises(BadRequest):
-            _decrypt(rand_bytes)
+            _decrypt(rand_bytes, rand_key)
 
         self.pr.db.commit()
         c.close()
 
     def test__encrypt(self):
         _encrypt = self.pr._encrypt
+        #c = self.pr.db.cursor()
 
         base = b'Hello, World'
-        enc = _encrypt(base, self.pub_key)
-        self.assertEqual(rsa.decrypt(enc, self.priv_key), base)
+
+        #c.execute('''SELECT priv_key FROM key''')
+        #key_array = c.fetchone()['priv_key']
+        #server_priv = rsa.PrivateKey(*list(map(int, key_array)))
+
+        enc_packed = _encrypt(base, self.pub_key)
+        enc_msg, enc_key = enc_packed.split(b':')
+        key = rsa.decrypt(b64decode(enc_key), self.priv_key)
+        aes = pyaes.AESModeOfOperationCTR(key)
+        self.assertEqual(aes.decrypt(b64decode(enc_msg)), base)
 
     def test__verify_signature(self):
         _verify_signature = self.pr._verify_signature
 
         base = b'Hello, World'
         sign = rsa.sign(base, self.priv_key, 'SHA-256')
-        _verify_signature(base, sign, self.pub_key)
+        _verify_signature(b64encode(base), sign, self.pub_key)
 
         rand_bytes = b'not_a_signature'
         with self.assertRaises(BadRequest):
-            _verify_signature(base, rand_bytes, self.pub_key)
+            _verify_signature(b64encode(base), rand_bytes, self.pub_key)
 
     def test__add_session(self):
         _add_session = self.pr._add_session
@@ -383,8 +435,12 @@ class TestProcessor(unittest.TestCase):
 
         c.execute('''SELECT * FROM profiles
                      WHERE name = %s''', (self.nick,))
-        self.assertTupleEqual(tuple(c.fetchone()),
-                              (self.nick, '', '', 0, '', b''))
+        data = list(c.fetchone())
+        data[-1] = bytes(data[-1])
+        with open('avatar_placeholder.png', 'rb') as f:
+            img = f.read()
+        self.assertTupleEqual(tuple(data),
+                              (self.nick, '', '', 0, '', img))
 
         resp2 = self.unpack(register(self.request_id,
                                      self.ip,
@@ -430,14 +486,15 @@ class TestProcessor(unittest.TestCase):
                 [self.request_id])
         self.assertEqual(resp1, exp1)
 
-        resp2 = self.unpack(login(self.request_id,
-                                  self.ip,
-                                  self.nick,
-                                  self.pswd,
-                                  ':'.join(self.key_strings), {}))
+        resp2_tuple = login(self.request_id,
+                            self.ip,
+                            self.nick,
+                            self.pswd,
+                            ':'.join(self.key_strings), {})
         exp2 = (sc.login_error,
                 [self.request_id])
-        self.assertEqual(resp2, exp2)
+        self.assertEqual(self.unpack(resp2_tuple[0]), exp2)
+        self.assertEqual(resp2_tuple[1], self.pub_key)
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
@@ -446,7 +503,7 @@ class TestProcessor(unittest.TestCase):
                                   self.ip,
                                   self.nick,
                                   self.pswd,
-                                  ':'.join(self.key_strings), {}))
+                                  ':'.join(self.key_strings), {})[0])
         self.assertEqual(resp3, exp2)
 
         self.pr._close_session(self.ip)
@@ -454,50 +511,63 @@ class TestProcessor(unittest.TestCase):
         self.pr.db.commit()
         c.close()
 
-    def test_search_username(self):
-        search_username = self.pr.search_username
+    def test_search_list(self):
+        search_list = self.pr.search_list
         c = self.pr.db.cursor()
+        ip = 'other_ip'
 
         c.execute('''INSERT INTO users
-                     VALUES (%s, '', ARRAY[]::text[],
-                                     ARRAY[]::text[],
+                     VALUES (%s, '', ARRAY['user1'],
+                                     ARRAY['user1'],
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
         self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
-        users = ('user1', 'user10', 'user2')
-        for i in users:
+        self.pr._add_session('user2', '1:2', ip)
+        users = ('user1', 'user10', 'user2', 'user4', 'user5')
+        for i in users[1:]:
             c.execute('''INSERT INTO users
                          VALUES (%s, '', ARRAY[]::text[],
                                          ARRAY[]::text[],
                                          ARRAY[]::text[],
                                          ARRAY[]::text[])''', (i,))
+        c.execute('''INSERT INTO users
+                     VALUES (%s, '', ARRAY[]::text[],
+                                     ARRAY[]::text[],
+                                     ARRAY[%s]::text[],
+                                     ARRAY[]::text[])''', ('user3', self.nick))
+        c.execute('''INSERT INTO users
+                     VALUES (%s, '', ARRAY[%s],
+                                     ARRAY[]::text[],
+                                     ARRAY[]::text[],
+                                     ARRAY[]::text[])''', ('user1', self.nick))
 
-        resp1 = self.unpack(search_username(self.request_id,
-                                            self.ip,
-                                            'user1'))
-        exp1 = (sc.search_username_result,
-                [self.request_id,
-                 ['user1', 'user10']])
-        self.assertEqual(resp1[0], exp1[0])
-        self.assertEqual(resp1[1][0], exp1[1][0])
-        self.assertListEqual(sorted(resp1[1][1]), exp1[1][1])
+        c.execute('''INSERT INTO requests
+                     VALUES (%s, %s, '')''', (self.nick, 'user4'))
+        c.execute('''INSERT INTO requests
+                     VALUES (%s, %s, '')''', ('user5', self.nick))
 
-        resp2 = self.unpack(search_username(self.request_id,
-                                            self.ip,
-                                            'user'))
-        exp2 = (sc.search_username_result,
-                [self.request_id,
-                 [self.nick, 'user1', 'user10', 'user2']])
-        self.assertEqual(resp2[0], exp2[0])
-        self.assertEqual(resp1[1][0], exp1[1][0])
-        self.assertListEqual(sorted(resp2[1][1]), exp2[1][1])
+        resp = self.unpack(search_list(self.request_id,
+                                        self.ip))
+        exp = (sc.search_list,
+               [self.request_id,
+                [['user2', True], ['user10', False]]])
+        self.assertEqual(resp[0], exp[0])
+        self.assertEqual(resp[1][0], exp[1][0])
+        self.assertListEqual(sorted(resp[1][1]), sorted(exp[1][1]))
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
         self.pr._close_session(self.ip)
+        self.pr._close_session(ip)
         for i in users:
             c.execute('''DELETE FROM users
                          WHERE name = %s''', (i,))
+        c.execute('''DELETE FROM users
+                     WHERE name = %s''', ('user3',))
+
+        c.execute('''DELETE FROM requests
+                     WHERE from_who = 'user5' OR
+                     to_who = 'user4' ''')
 
         self.pr.db.commit()
         c.close()
@@ -528,10 +598,10 @@ class TestProcessor(unittest.TestCase):
                                          self.ip))
         exp = (sc.friends_group_response,
                [self.request_id,
-                [['user1', 'user2'],
-                 ['user10'],
-                 ['user2'],
-                 ['user3']]])
+                [[['user2', True]],
+                 [['user1', True], ['user2', True]],
+                 [['user10', False]],
+                 [['user3', False]]]])
         self.assertEqual(resp[0], exp[0])
         self.assertEqual(resp[1][0], exp[1][0])
         for i in range(len(resp[1][0])):
@@ -986,11 +1056,11 @@ class TestProcessor(unittest.TestCase):
         user3 = '@second_user'
 
         c.execute('''INSERT INTO users
-                     VALUES (%s, '', ARRAY[%s],
+                     VALUES (%s, '', %s,
                                      ARRAY[]::text[],
                                      ARRAY[]::text[],
                                      ARRAY['0'])''',
-                  (self.nick, user1 + ',' + user2))
+                  (self.nick, [user1, user2]))
         self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[%s],
@@ -1011,16 +1081,19 @@ class TestProcessor(unittest.TestCase):
                                         timestamp bigint,
                                         sender text)''')
 
-        resp = self.unpack(create_dialog(self.request_id,
+        resp1 = self.unpack(create_dialog(self.request_id,
                                          self.ip,
                                          user1))
-        exp = (sc.create_dialog_succ,
-               [self.request_id])
-        self.assertTupleEqual(resp, exp)
+        exp1 = (sc.create_dialog_succ,
+                [self.request_id, 1])
+        self.assertTupleEqual(resp1, exp1)
 
-        create_dialog(self.request_id,
-                      self.ip,
-                      user2)
+        resp2 = self.unpack(create_dialog(self.request_id,
+                                          self.ip,
+                                          user2))
+        exp2 = (sc.create_dialog_succ,
+                [self.request_id, 0])
+        self.assertTupleEqual(resp2, exp2)
         c.execute('''SELECT dialogs::text[] FROM users
                      WHERE name = %s''', (user1,))
         dlg1 = c.fetchone()['dialogs']
@@ -1075,7 +1148,7 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[])''', (self.nick,))
         self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
         c.execute('''INSERT INTO profiles
-                     VALUES (%s, %s, %s, 0, '', E'')''',
+                     VALUES (%s, %s, %s, 0, '', E'FF')''',
                   (self.nick, status, email))
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
@@ -1092,7 +1165,7 @@ class TestProcessor(unittest.TestCase):
                 email,
                 0,
                 '',
-                b''])
+                b64encode(b'FF').decode()])
         self.assertEqual(resp, exp)
 
         with self.assertRaises(BadRequest):
@@ -1288,45 +1361,6 @@ class TestProcessor(unittest.TestCase):
         self.pr.db.commit()
         c.close()
 
-    def test_delete_dialog(self):
-        delete_dialog = self.pr.delete_dialog
-        c = self.pr.db.cursor()
-
-        c.execute('''INSERT INTO users
-                     VALUES (%s, '', ARRAY[]::text[],
-                                     ARRAY[]::text[],
-                                     ARRAY[]::text[],
-                                     ARRAY['0'])''', (self.nick,))
-        self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
-        c.execute('''CREATE TABLE "d0" (content text,
-                                        timestamp bigint,
-                                        sender text)''')
-        c.execute('''INSERT INTO "d0"
-                     VALUES ('', 0, %s)''', (self.nick,))
-
-        resp = self.unpack(delete_dialog(self.request_id,
-                                         self.ip,
-                                         0))
-        exp = (sc.delete_dialog_succ,
-               [self.request_id])
-        self.assertTupleEqual(resp, exp)
-
-        c.execute('''SELECT table_name FROM information_schema.tables
-                     WHERE table_name = 'd0' AND table_schema = 'public' ''')
-        self.assertIsNone(c.fetchone())
-
-        with self.assertRaises(BadRequest):
-            delete_dialog(self.request_id,
-                          self.ip,
-                          'not_int')
-
-        c.execute('''DELETE FROM users
-                     WHERE name = %s''', (self.nick,))
-        self.pr._close_session(self.ip)
-
-        self.pr.db.commit()
-        c.close()
-
     def test_search_msg(self):
         search_msg = self.pr.search_msg
         c = self.pr.db.cursor()
@@ -1442,6 +1476,7 @@ class TestProcessor(unittest.TestCase):
         c = self.pr.db.cursor()
         user1 = '@other_user'
         user2 = '@first_user'
+        ip = 'other_ip'
 
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
@@ -1449,23 +1484,29 @@ class TestProcessor(unittest.TestCase):
                                      ARRAY[]::text[],
                                      ARRAY[]::text[])''', (self.nick,))
         self.pr._add_session(self.nick, ':'.join(self.key_strings), self.ip)
+        self.pr._add_session(user2, '1:2', ip)
         c.execute('''INSERT INTO requests
                      VALUES (%s, %s, 'hello')''', (user1, self.nick))
         c.execute('''INSERT INTO requests
                      VALUES (%s, %s, 'wrong')''', (user1, user2))
+        c.execute('''INSERT INTO requests
+                     VALUES (%s, %s, 'bye')''', (self.nick, user2))
 
         resp = self.unpack(add_requests(self.request_id,
                                         self.ip))
         exp = (sc.add_requests,
                [self.request_id,
-                [[user1, 'hello']]])
+                [[[user1, 'hello', False]],
+                 [[user2, 'bye', True]]]])
         self.assertTupleEqual(resp, exp)
 
         c.execute('''DELETE FROM users
                      WHERE name = %s''', (self.nick,))
         c.execute('''DELETE FROM requests
-                     WHERE from_who = %s''', (user1,))
+                     WHERE from_who = %s
+                     OR from_who = %s''', (user1, self.nick))
         self.pr._close_session(self.ip)
+        self.pr._close_session(ip)
 
         self.pr.db.commit()
         c.close()
@@ -1513,7 +1554,7 @@ class TestProcessor(unittest.TestCase):
     def test_set_image(self):
         set_image = self.pr.set_image
         c = self.pr.db.cursor()
-        img = b'PNG'
+        img = b64encode(b'PNG')
 
         c.execute('''INSERT INTO users
                      VALUES (%s, '', ARRAY[]::text[],
@@ -1533,7 +1574,7 @@ class TestProcessor(unittest.TestCase):
 
         c.execute('''SELECT image FROM profiles
                      WHERE name = %s''', (self.nick,))
-        self.assertEqual(bytes(c.fetchone()['image']), img)
+        self.assertEqual(bytes(c.fetchone()['image']), b64decode(img))
 
         c.execute('''DELETE FROM profiles
                      WHERE name = %s''', (self.nick,))

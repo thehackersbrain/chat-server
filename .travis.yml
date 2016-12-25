@@ -14,12 +14,9 @@ before_script:
 
 script:
   - python3 test_processors.py
-  - python3 test_request_handler.py
   - psql -c "DROP DATABASE chat" -U postgres
   - psql -c "CREATE DATABASE chat WITH ENCODING 'utf8';" -U postgres
   - coverage run test_processors.py
-  - coverage run test_request_handler.py
-  - coverage combine
 
 after_success:
   - codecov
