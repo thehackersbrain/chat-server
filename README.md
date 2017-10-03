@@ -4,8 +4,8 @@
 [![Build Status](https://travis-ci.org/MoarCatz/chat-server.svg?branch=master)](https://travis-ci.org/MoarCatz/chat-server)
 [![codecov](https://codecov.io/gh/MoarCatz/chat-server/branch/master/graph/badge.svg)](https://codecov.io/gh/MoarCatz/chat-server)
 
-# Chat-Server
-Backend for encrypted chat service.
+# Chat Server
+Backend for the encrypted chat service.
 
 ## Getting Started
 ### Prerequisites
@@ -15,8 +15,6 @@ Here is a list of Python dependencies we're using right now:
 * [rsa](https://github.com/sybrenstuvel/python-rsa)
 * [pyaes](https://github.com/ricmoo/pyaes)
 * [psycopg2](https://github.com/psycopg/psycopg2)
-
-=============
 
 ### Deploying
 Here is a step by step example of how you can get this server up and running:
@@ -45,7 +43,7 @@ This server can:
 ## Contributing
 We will be happy to see your PRs. If you can, please consider these topics we would also like to recieve help with:
 
-- [ ] Asynchronious programming
+- [ ] Asynchronous programming
 - [ ] Testing
 - [ ] Performance
 - [ ] Security Issues
